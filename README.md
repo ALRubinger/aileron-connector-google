@@ -235,12 +235,38 @@ verification rules in the Aileron docs.
 
 ## OAuth setup (publisher side)
 
-This connector ships with a Google OAuth Desktop app `client_id`
+This connector ships with a Google OAuth Desktop-app `client_id`
 registered by the publisher; users do not register their own apps.
-Per ADR-0006, the runtime drives the OAuth dance via PKCE so no
-client secret is shipped or stored client-side. See the manifest's
-`[capabilities.credential.oauth2]` block for the configured
-authorize/token URLs and scopes.
+Per ADR-0006 the runtime drives the OAuth dance via PKCE.
+
+### `client_secret` is bound at release time
+
+Google's "Desktop app" OAuth client type rejects token-exchange and
+refresh requests that omit `client_secret` even with PKCE present
+— a Google quirk, not a spec requirement. Per ADR-0002, the value
+ships in the connector binary the same way `gcloud` and `gh` ship
+their bundled secrets, but it is **never committed to this source
+repo**: GitHub's secret scanner forwards Google client secrets to
+Google, which auto-rotates them on detection.
+
+The committed source manifest carries
+`client_secret = "bound-at-release"` as a placeholder. The release
+workflow substitutes it from the `GOOGLE_OAUTH_CLIENT_SECRET`
+repository secret before signing and packing — same template
+pattern as the connector content hash and the version. The bound
+value lives only in the signed connector tarball.
+
+Publisher one-time setup:
+
+1. Google Cloud Console → APIs & Services → Credentials → OAuth
+   client ID for the Desktop app → copy the **Client secret**.
+2. Repo Settings → Secrets and variables → Actions → New
+   repository secret. Name: `GOOGLE_OAUTH_CLIENT_SECRET`. Paste
+   the value. Save. Done — never recorded anywhere else.
+
+If the secret rotates (manually or because Google detected an
+exposed value), the publisher updates the same Actions secret;
+the next `vX.Y.Z` push picks up the new value automatically.
 
 ### Demo before verification: Google's "Testing" publishing status
 

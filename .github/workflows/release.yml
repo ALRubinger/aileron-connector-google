@@ -55,6 +55,48 @@ jobs:
           fi
           echo "Substituted version $version into all manifests"
 
+      - name: Substitute placeholder OAuth client_secret in connector manifest
+        env:
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+        run: |
+          # The connector's `client_secret` field is a release-time
+          # bound value, never committed to source — committed Google
+          # OAuth client_secrets are auto-revoked by Google when
+          # GitHub's secret scanner forwards them. The committed source
+          # carries `client_secret = "bound-at-release"`; CI replaces it
+          # with the value of the `GOOGLE_OAUTH_CLIENT_SECRET` repo
+          # secret. Per ADR-0002, the bound value lives only in the
+          # signed connector tarball.
+          if [ -z "$GOOGLE_OAUTH_CLIENT_SECRET" ]; then
+            echo "::error::GOOGLE_OAUTH_CLIENT_SECRET repo secret is not set"
+            exit 1
+          fi
+
+          # Guard: exactly one occurrence of the quoted placeholder.
+          # The unquoted substring `bound-at-release` also shows up
+          # in human-prose comments (referring to the action-manifest
+          # hash placeholder `sha256:bound-at-release`), so we match
+          # the full literal `"bound-at-release"` to anchor on the
+          # actual config line and not on prose.
+          count=$(grep -c '"bound-at-release"' connector/manifest.toml || true)
+          if [ "$count" != "1" ]; then
+            echo "::error::expected exactly one '\"bound-at-release\"' placeholder in connector/manifest.toml; found $count"
+            exit 1
+          fi
+
+          # GitHub Actions masks repo-secret values in stdout/stderr
+          # so `ps`-visible interpolation in this single line is not a
+          # log-leak risk. Google client_secret values
+          # (`GOCSPX-` + alphanumerics) contain no sed-special chars.
+          sed -i "s|\"bound-at-release\"|\"$GOOGLE_OAUTH_CLIENT_SECRET\"|" connector/manifest.toml
+
+          # Post-check: the quoted placeholder is gone.
+          if grep -q '"bound-at-release"' connector/manifest.toml; then
+            echo "::error::placeholder still present after substitution"
+            exit 1
+          fi
+          echo "Substituted GOOGLE_OAUTH_CLIENT_SECRET into connector/manifest.toml"
+
       - name: Build connector WASM
         env:
           GOOS: wasip1
