@@ -32,33 +32,28 @@ jobs:
         with:
           go-version-file: connector/go.mod
 
-      - name: Validate manifest versions match the tag
+      - name: Substitute placeholder versions in manifests
         run: |
+          # Source manifests carry version = "0.0.0-dev" as a placeholder
+          # (parallel to the action manifests' sha256:bound-at-release
+          # hash placeholder). CI substitutes the real version, taken
+          # from the pushed tag, into the working tree before any
+          # hashing/signing/packing. The committed source stays a
+          # template — the publisher pushes a tag and never edits a
+          # version field by hand.
           tag="${GITHUB_REF#refs/tags/}"
-          expected_version="${tag#v}"
+          version="${tag#v}"
 
-          conflicts=0
-
-          connector_version=$(grep -E '^version = "' connector/manifest.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          if [ "$connector_version" != "$expected_version" ]; then
-            echo "::error file=connector/manifest.toml::version $connector_version does not match tag $tag (expected $expected_version)"
-            conflicts=$((conflicts + 1))
-          fi
-
-          for action_dir in actions/*/; do
-            action_md="$action_dir/action.md"
-            action_version=$(grep -E '^version = "' "$action_md" | head -1 | sed 's/version = "\(.*\)"/\1/')
-            if [ "$action_version" != "$expected_version" ]; then
-              echo "::error file=$action_md::version $action_version does not match tag $tag (expected $expected_version)"
-              conflicts=$((conflicts + 1))
-            fi
+          sed -i "s|0\\.0\\.0-dev|$version|g" connector/manifest.toml
+          for action_md in actions/*/action.md; do
+            sed -i "s|0\\.0\\.0-dev|$version|g" "$action_md"
           done
 
-          if [ "$conflicts" -gt 0 ]; then
-            echo "::error::$conflicts manifest(s) out of sync with tag — bump versions before tagging"
+          if grep -l '0\.0\.0-dev' connector/manifest.toml actions/*/action.md; then
+            echo "::error::placeholder version still present after substitution"
             exit 1
           fi
-          echo "All manifests at version $expected_version (matches $tag)"
+          echo "Substituted version $version into all manifests"
 
       - name: Build connector WASM
         env:
