@@ -51,10 +51,26 @@ scope = "Read your Gmail messages and Calendar events; create drafts and calenda
 # more than a read-only submission. Restricted scopes additionally
 # face an annual CASA re-review, so it is cheapest to declare the
 # eventual scope list now rather than expand later.
+#
+# `client_secret` is a release-time bound value, not a source-repo
+# value. Google's "Desktop app" OAuth client type requires
+# client_secret on token exchange and refresh even with PKCE
+# (the API enforces presence; the value is not cryptographically
+# secret per Google's own installed-app guidance, since it ships
+# in distributed binaries the same way `gcloud` and `gh` do).
+# The committed source carries the placeholder string below; the
+# release workflow substitutes it from the
+# `GOOGLE_OAUTH_CLIENT_SECRET` repository secret before signing
+# and packing — same template pattern as the connector content
+# hash and the version. This avoids committing the value to public
+# source, which would trigger GitHub's secret scanning and
+# Google's automatic rotation. See ADR-0002's PKCE section in the
+# Aileron docs for the full rationale.
 [capabilities.credential.oauth2]
 authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url     = "https://oauth2.googleapis.com/token"
 client_id     = "298373247853-i63n2n3ghapvbsjn3ocb2jr6u9vkcmih.apps.googleusercontent.com"
+client_secret = "bound-at-release"
 scopes = [
   # Restricted tier (Gmail).
   "https://www.googleapis.com/auth/gmail.readonly",
