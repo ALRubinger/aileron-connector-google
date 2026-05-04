@@ -1,6 +1,6 @@
 # aileron-connector-google
 
-Aileron connector for Google APIs — Gmail + Calendar read/write at v0.0.1.
+Aileron connector for Google APIs — Gmail + Calendar read/write.
 
 This repo is the first reference connector for the Aileron action runtime
 (see [github.com/ALRubinger/aileron](https://github.com/ALRubinger/aileron)).
@@ -10,8 +10,7 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Four operations at v0.0.1, two read + two write, across Gmail and
-Calendar:
+Four operations, two read + two write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
@@ -41,9 +40,11 @@ later v0.x consideration.
 ## Demo path
 
 ```sh
-# Install the connector and an action.
-aileron connector install github://ALRubinger/aileron-connector-google@0.0.1
-aileron action add github://ALRubinger/aileron-connector-google/actions/list-recent-emails@0.0.1
+# Install the connector and an action. Replace <version> with a tag
+# from the releases page. The Aileron resolver requires a pinned
+# version per ADR-0004 — there is no `latest` channel.
+aileron connector install github://ALRubinger/aileron-connector-google@<version>
+aileron action add github://ALRubinger/aileron-connector-google/actions/list-recent-emails@<version>
 
 # CLI auto-prompts for OAuth setup; complete the consent in the browser.
 # Aileron stores the refresh token in your local vault; the connector
@@ -145,41 +146,49 @@ through release / install / binding setup.
 ## Releasing
 
 **One tag, one workflow run, all artifacts.** The publisher pushes a
-single `vX.Y.Z` tag; CI builds the connector, computes the content
-hash, signs everything, and creates one connector release plus one
-release per action — each at the per-FQN tag the Aileron install
-pipeline expects.
+`vX.Y.Z` tag; CI does the rest. There are no manifest edits before
+tagging — the source manifests are templates with placeholder
+versions and a placeholder connector hash, and CI substitutes the
+real values into build copies before signing and packing.
 
 ```sh
-# Bump version in connector/manifest.toml and every actions/*/action.md.
-# CI validates that manifest versions match the tag and fails fast
-# if they're out of sync, so this step is required.
-sed -i '' 's/version = "0.0.1"/version = "0.0.2"/' connector/manifest.toml actions/*/action.md
-sed -i '' 's|/aileron-connector-google@0.0.1|/aileron-connector-google@0.0.2|' actions/*/action.md
-git commit -am "chore: bump to v0.0.2"
-
-git tag v0.0.2
-git push origin main v0.0.2
-# Wait ~2 minutes. Done — connector + 4 actions all published.
+# Pick the next version, tag the current commit, push the tag.
+git tag vX.Y.Z
+git push origin vX.Y.Z
+# Wait ~2 minutes. Done — connector + every action tarball is
+# published at the per-FQN tag the install pipeline expects.
 ```
+
+The source manifests carry two placeholders that CI binds at release
+time:
+
+- `version = "0.0.0-dev"` in `connector/manifest.toml` and every
+  `actions/*/action.md` (also in each action's `source` URL and
+  `[[requires.connectors]]` block). CI replaces `0.0.0-dev` with the
+  version extracted from the pushed tag (`vX.Y.Z` → `X.Y.Z`).
+- `hash = "sha256:bound-at-release"` in every action manifest's
+  `[[requires.connectors]]` block. CI replaces this with the real
+  content-addressed hash of the connector tarball after the connector
+  is built.
+
+The committed source intentionally keeps both placeholders. Each
+release runs the same substitution against an unchanged template, so
+the publisher does not hand-edit version fields and there is no
+"bump to vX.Y.Z" commit per release.
 
 What CI does on each `vX.Y.Z` push:
 
-1. Validates every manifest's `version` field matches the tag.
+1. Substitutes `0.0.0-dev` with the tag's version across every
+   manifest in the working tree.
 2. Builds `connector.wasm` (wasip1).
 3. Computes `sha256(connector.wasm || manifest.toml)` — the
    canonical-hash input from ADR-0004.
 4. Signs the connector payload, packs `aileron.tar.gz`, publishes at
    tag `vX.Y.Z`.
-5. For each `actions/*/action.md`: substitutes `sha256:bound-at-release`
-   with the real connector hash, signs the substituted manifest, packs
-   `aileron.tar.gz`, publishes at tag `actions/<name>/vX.Y.Z`.
-
-The committed source manifests keep `sha256:bound-at-release` as a
-permanent placeholder — they're release templates. Only the published
-tarballs carry the real hash. Each release runs the same substitution
-against the unchanged template, so version bumps are the only commits
-the publisher hand-edits before tagging.
+5. For each `actions/*/action.md`: substitutes
+   `sha256:bound-at-release` with the real connector hash, signs the
+   substituted manifest, packs `aileron.tar.gz`, publishes at tag
+   `actions/<name>/vX.Y.Z`.
 
 Aileron's install pipeline resolves
 `github://ALRubinger/aileron-connector-google@<ver>` to the connector
@@ -269,7 +278,7 @@ set:
 | Scope | Tier | Used by |
 |---|---|---|
 | `gmail.readonly` | Restricted | `list-recent-emails` |
-| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send at v0.0.1) |
+| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send) |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
 

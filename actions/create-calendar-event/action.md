@@ -1,11 +1,16 @@
 +++
 name = "create-calendar-event"
-version = "0.0.1"
-source = "github://ALRubinger/aileron-connector-google/actions/create-calendar-event@0.0.1"
+# `version` and the `0.0.0-dev` markers in `source` and the
+# `[[requires.connectors]]` block are placeholders. CI substitutes
+# them with the real version (from the pushed tag) into a build copy
+# of this manifest before signing and packing. Source stays template;
+# only the published tarball carries the real version.
+version = "0.0.0-dev"
+source = "github://ALRubinger/aileron-connector-google/actions/create-calendar-event@0.0.0-dev"
 
 [[requires.connectors]]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.0.1"
+version = "0.0.0-dev"
 # `hash` is the connector tarball's content-addressed identity per
 # ADR-0002. CI substitutes this placeholder with the real hash at
 # release time (see .github/workflows/release.yml). The committed

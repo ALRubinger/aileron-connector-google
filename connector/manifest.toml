@@ -5,9 +5,15 @@
 # runtime enforces these at the WASM sandbox boundary and at the action
 # boundary (defense in depth per ADR-0003 / ADR-0005).
 
+# `version` is `0.0.0-dev` in source as a placeholder. CI substitutes
+# the real version (extracted from the pushed tag) into a build copy
+# before hashing/signing/packing — the same release-template pattern
+# as the action manifests' `sha256:bound-at-release` hash. The
+# committed source intentionally keeps the placeholder so the
+# publisher does not edit version fields by hand on every release.
 [connector]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.0.1"
+version = "0.0.0-dev"
 publisher = "ALRubinger"
 
 # Network capability — the only host:port pairs this connector is allowed
@@ -36,8 +42,7 @@ scope = "Read your Gmail messages and Calendar events; create drafts and calenda
 # `client_id` is intentionally a placeholder until the Google Cloud
 # Console registration completes — see README.md "OAuth setup
 # (publisher side)". The runtime fails closed if a placeholder
-# client_id is shipped to a real release, so updating this field is
-# gating on v0.0.1.
+# client_id is shipped to a real release.
 #
 # Scope set is front-loaded across the read + write capabilities the
 # connector ships at v0.x. Per the README's scope-expansion table,
