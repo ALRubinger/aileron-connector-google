@@ -26,7 +26,7 @@ hosts = [
 # `credential: "oauth2"`.
 [capabilities.credential]
 kind = "oauth2"
-scope = "Read your Gmail messages and Calendar events"
+scope = "Read your Gmail messages and Calendar events; create drafts and calendar events"
 
 # OAuth provider config — the runtime drives the OAuth dance using these
 # endpoints when the user runs `aileron binding setup`. Per ADR-0006 we
@@ -34,14 +34,27 @@ scope = "Read your Gmail messages and Calendar events"
 # registers a Desktop app with Google and ships only the client_id.
 #
 # `client_id` is intentionally a placeholder until the Google Cloud
-# Console registration completes — see docs/publisher-oauth-setup.md.
-# The runtime fails closed if a placeholder client_id is shipped to a
-# real release, so updating this field is gating on v0.1.0.
+# Console registration completes — see README.md "OAuth setup
+# (publisher side)". The runtime fails closed if a placeholder
+# client_id is shipped to a real release, so updating this field is
+# gating on v0.1.0.
+#
+# Scope set is front-loaded across the read + write capabilities the
+# connector ships at v0.x. Per the README's scope-expansion table,
+# verification cost is per-tier (sensitive vs restricted), not
+# per-scope, so submitting the full set at registration costs no
+# more than a read-only submission. Restricted scopes additionally
+# face an annual CASA re-review, so it is cheapest to declare the
+# eventual scope list now rather than expand later.
 [capabilities.credential.oauth2]
 authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url     = "https://oauth2.googleapis.com/token"
 client_id     = "REPLACE_WITH_GOOGLE_DESKTOP_APP_CLIENT_ID"
 scopes = [
+  # Restricted tier (Gmail).
   "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/gmail.compose",
+  # Sensitive tier (Calendar).
   "https://www.googleapis.com/auth/calendar.readonly",
+  "https://www.googleapis.com/auth/calendar.events",
 ]

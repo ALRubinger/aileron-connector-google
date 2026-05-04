@@ -10,14 +10,17 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Two read-only operations at v0.1.0, both backed by Google's APIs:
+Four operations at v0.1.0, two read + two write, across Gmail and
+Calendar:
 
-| Action | Op | Endpoint |
-|---|---|---|
-| `list-recent-emails` | `list_recent_emails` | `GET gmail.googleapis.com/gmail/v1/users/me/messages` |
-| `list-upcoming-events` | `list_upcoming_events` | `GET www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
+| Action | Op | HTTP | Endpoint |
+|---|---|---|---|
+| `list-recent-emails` | `list_recent_emails` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages` |
+| `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
+| `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
+| `create-calendar-event` | `create_calendar_event` | POST | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 
-Both run inside the Aileron WASM sandbox with `[capabilities.network]`
+All four run inside the Aileron WASM sandbox with `[capabilities.network]`
 restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
 The connector never holds OAuth tokens — Aileron's runtime resolves the
 bound credential and injects `Authorization: Bearer <token>` host-side
@@ -25,11 +28,15 @@ when the connector marks an outbound HTTP request with
 `credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
 docs).
 
-Write operations (sending mail, creating events) are not in v0.1.0's
-acceptance set but are in scope for v0.x — see [Scope expansion](#scope-expansion)
-below. They cost no extra Google verification time over what the
-read-only scopes already require (write and read share the same
-verification tier per scope), so adding them later is cheap.
+The two write ops are **not idempotent** — invoking them twice creates
+duplicate drafts/events. Their action manifests declare
+`[[execute]].idempotent = false` so the gateway's retry layer
+(ADR-0010) does not double-write on transient failures.
+
+`draft-email` deliberately creates drafts only — it does not send.
+Sending stays the user's choice from Gmail's drafts folder. A
+dedicated `send-email` action with explicit per-call approval is a
+later v0.x consideration.
 
 ## Demo path
 
@@ -154,17 +161,17 @@ per-scope. Adding new scopes within an already-verified tier costs
 zero additional verification time. The connector's eventual scope
 set:
 
-| Scope | Tier | Status at v0.1.0 |
+| Scope | Tier | Used by |
 |---|---|---|
-| `gmail.readonly` | Restricted | Shipped |
-| `calendar.readonly` | Sensitive | Shipped |
-| `calendar.events` (read+write) | Sensitive | Tracked for v0.x; same submission as `calendar.readonly` |
-| `gmail.compose` (drafts+send) | Restricted | Tracked for v0.x; same submission as `gmail.readonly` |
+| `gmail.readonly` | Restricted | `list-recent-emails` |
+| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send at v0.1.0) |
+| `calendar.readonly` | Sensitive | `list-upcoming-events` |
+| `calendar.events` | Sensitive | `create-calendar-event` |
 
 Submit the full scope list at once when registering the OAuth app, so
-all scopes go through verification together. Restricted scopes also
-require an annual CASA security re-review once verified — front-load
-the scopes you know you want.
+all four go through verification together. Restricted scopes also
+require an annual CASA security re-review once verified — front-loading
+the eventual scope list at registration is the cheapest path.
 
 ## License
 
