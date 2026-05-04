@@ -17,6 +17,9 @@
 //	{"op": "list_recent_emails", "args": {"query": "is:unread", "max_results": 10}}
 //	  → {"output": {"messages": [...]}}
 //
+//	{"op": "get_email", "args": {"id": "19df4136f28569d2"}}
+//	  → {"output": {"id": "...", "snippet": "...", "payload": {"headers": [...]}, ...}}
+//
 //	{"op": "list_upcoming_events", "args": {"calendar_id": "primary", "max_results": 10}}
 //	  → {"output": {"items": [...]}}
 //
@@ -125,6 +128,8 @@ func main() {
 	switch in.Op {
 	case "list_recent_emails":
 		listRecentEmails(in.Args)
+	case "get_email":
+		getEmail(in.Args)
 	case "list_upcoming_events":
 		listUpcomingEvents(in.Args)
 	case "draft_email":
@@ -172,6 +177,53 @@ func listRecentEmails(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		writeError("connector_runtime_error", "list_recent_emails: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// getEmail calls Gmail's users.messages.get endpoint for a single
+// message id with format=metadata.
+//
+//	GET https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata
+//
+// `format=metadata` returns headers (Subject, From, To, Date, etc.),
+// labelIds, snippet (~200-char body preview), and internalDate without
+// fetching the full MIME body. That is the right call cost / utility
+// trade-off for "summarize my recent emails" and "what does this email
+// say at a glance" agent flows. For full-body access, callers can add
+// a future `format` arg or a separate `get_email_body` op.
+//
+// Args:
+//
+//	id  (string, required) — Gmail message id, as returned by
+//	    `list_recent_emails` in `messages[].id`.
+//
+// Output: the parsed users.messages.get response. The agent typically
+// reads `payload.headers[]` and `snippet` directly.
+func getEmail(args map[string]any) {
+	id, _ := args["id"].(string)
+	if id == "" {
+		writeError("connector_runtime_error", "get_email: id is required")
+		return
+	}
+	q := url.Values{}
+	q.Set("format", "metadata")
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/messages/" +
+		url.PathEscape(id) + "?" + q.Encode()
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "get_email: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("Gmail API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "get_email: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)

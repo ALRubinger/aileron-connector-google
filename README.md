@@ -10,16 +10,23 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Four operations, two read + two write, across Gmail and Calendar:
+Five operations, three read + two write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
 | `list-recent-emails` | `list_recent_emails` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages` |
+| `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `create-calendar-event` | `create_calendar_event` | POST | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 
-All four run inside the Aileron WASM sandbox with `[capabilities.network]`
+`list-recent-emails` returns `{id, threadId}` pairs only — the cheapest
+shape for the Gmail API. Pair it with `get-email` to drill into
+metadata (subject, from, snippet) for one or more results. Agent flows
+that summarize the inbox typically fan out parallel `get-email` calls
+after one `list-recent-emails`.
+
+All five run inside the Aileron WASM sandbox with `[capabilities.network]`
 restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
 The connector never holds OAuth tokens — Aileron's runtime resolves the
 bound credential and injects `Authorization: Bearer <token>` host-side
@@ -69,7 +76,10 @@ aileron-connector-google/
 │   └── manifest.toml   # capability declarations + OAuth provider config
 ├── actions/
 │   ├── list-recent-emails/action.md
-│   └── list-upcoming-events/action.md
+│   ├── get-email/action.md
+│   ├── list-upcoming-events/action.md
+│   ├── draft-email/action.md
+│   └── create-calendar-event/action.md
 ├── keys/
 │   └── publisher.pub   # ed25519 public key — installed users add to
 │                       # ~/.aileron/keyring.json to trust this publisher
@@ -303,7 +313,7 @@ set:
 
 | Scope | Tier | Used by |
 |---|---|---|
-| `gmail.readonly` | Restricted | `list-recent-emails` |
+| `gmail.readonly` | Restricted | `list-recent-emails`, `get-email` |
 | `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send) |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
