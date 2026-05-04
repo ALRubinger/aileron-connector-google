@@ -38,7 +38,7 @@ tasks:
       - tar czf aileron.tar.gz connector.wasm connector/manifest.toml connector-payload.sig 2>/dev/null || tar czf aileron.tar.gz connector.wasm connector/manifest.toml
 
   pack:action:
-    desc: Pack a single action tarball. Usage: task pack:action ACTION=list-recent-emails
+    desc: "Pack a single action tarball. Usage: task pack:action ACTION=list-recent-emails"
     requires:
       vars: [ACTION]
     cmds:
