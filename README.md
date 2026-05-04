@@ -85,6 +85,63 @@ task build
 Produces `connector.wasm` from `connector/main.go` (Go's native WASI
 Preview 1 target).
 
+## Testing
+
+Three layers, runnable independently:
+
+### 1. Unit tests — pure helpers, host platform
+
+```sh
+task test:unit
+```
+
+Runs `go test ./connector/...` against the helper functions
+(`buildRFC2822`, `normalizeAttendees`, `readMaxResults`) that have no
+host-import dependencies. These live in `connector/helpers.go` (no
+build tag) so `go test` exercises them on the host platform; the
+WASM-only entry point in `connector/main.go` is excluded by its
+`//go:build wasip1` tag during host builds.
+
+### 2. wasip1 build smoke test
+
+```sh
+task test:wasip1
+```
+
+Confirms `connector/main.go` still compiles for the wasip1 target
+(catches host-import signature mismatches, missing imports, etc.).
+Runs as `GOOS=wasip1 GOARCH=wasm go build -o /dev/null .`.
+
+`task test` runs both of the above.
+
+### 3. Live API integration via the Aileron dev runner
+
+The unit tests don't exercise the host-import path or hit Google's
+APIs. For that, use [`aileron-connector-dev-run`](https://github.com/ALRubinger/aileron/tree/main/cmd/aileron-connector-dev-run)
+in the Aileron repo. It loads this connector's `connector.wasm` into
+the production Wazero runtime, enforces the manifest's
+`[capabilities.network]` grant, wires a stub credential resolver from
+`AILERON_DEV_TOKEN`, and invokes ops directly:
+
+```sh
+# Get a token from https://developers.google.com/oauthplayground
+# (gmail.compose + calendar.events scopes — or whichever ops you're testing).
+export AILERON_DEV_TOKEN=ya29...
+
+cd ~/git/ALRubinger/aileron && task build:connector-dev-run
+
+./build/aileron-connector-dev-run \
+  --wasm     ~/git/ALRubinger/aileron-connector-google/connector.wasm \
+  --manifest ~/git/ALRubinger/aileron-connector-google/connector/manifest.toml \
+  --op       create_calendar_event \
+  --args     '{"title":"test","start_time":"2026-05-04T15:00:00-07:00","end_time":"2026-05-04T15:30:00-07:00"}'
+```
+
+The op runs against real Google APIs; output is the parsed Calendar
+event response. This validates the credential-mediation path, the
+network grant, and the API call shape end-to-end without going
+through release / install / binding setup.
+
 ## Releasing
 
 Releases are tag-driven:

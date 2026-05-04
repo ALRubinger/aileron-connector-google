@@ -51,7 +51,19 @@ tasks:
       - rm -f connector.wasm connector-payload.bin connector-payload.sig aileron.tar.gz aileron-action-*.tar.gz
 
   test:
-    desc: Compile-check the connector source (smoke test — full integration runs in the Aileron repo's E2E suite)
+    desc: Run connector unit tests + verify the wasip1 target still compiles
+    cmds:
+      - task: test:unit
+      - task: test:wasip1
+
+  test:unit:
+    desc: Run unit tests for the pure helpers (host platform; no WASM)
+    dir: connector
+    cmds:
+      - go test -v -count=1 -cover ./...
+
+  test:wasip1:
+    desc: Smoke-check the connector compiles for the wasip1 target
     dir: connector
     env:
       GOOS: wasip1
