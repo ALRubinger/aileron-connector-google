@@ -49,7 +49,7 @@ scope = "Read your Gmail messages and Calendar events; create drafts and calenda
 [capabilities.credential.oauth2]
 authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
 token_url     = "https://oauth2.googleapis.com/token"
-client_id     = "REPLACE_WITH_GOOGLE_DESKTOP_APP_CLIENT_ID"
+client_id     = "298373247853-i63n2n3ghapvbsjn3ocb2jr6u9vkcmih.apps.googleusercontent.com"
 scopes = [
   # Restricted tier (Gmail).
   "https://www.googleapis.com/auth/gmail.readonly",
