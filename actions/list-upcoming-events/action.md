@@ -1,12 +1,17 @@
 +++
 name = "list-upcoming-events"
-version = "0.1.0"
-source = "github://ALRubinger/aileron-connector-google/actions/list-upcoming-events@0.1.0"
+version = "0.2.0"
+source = "github://ALRubinger/aileron-connector-google/actions/list-upcoming-events@0.2.0"
 
 [[requires.connectors]]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.1.0"
-hash = "sha256:REPLACE_AT_RELEASE"
+version = "0.2.0"
+# `hash` is the connector tarball's content-addressed identity per
+# ADR-0002. CI substitutes this placeholder with the real hash at
+# release time (see .github/workflows/release.yml). The committed
+# source intentionally keeps the placeholder so each release runs the
+# same substitution against an unchanged template.
+hash = "sha256:bound-at-release"
 capabilities = ["list_upcoming_events"]
 
 [match]

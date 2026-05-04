@@ -1,33 +1,64 @@
 name: Release
 
-# Tag-driven releases:
-#   - vX.Y.Z                        → connector tarball (connector.wasm + manifest.toml + signature)
-#   - actions/<action>/vX.Y.Z       → action tarball (action.md + signature)
+# Atomic release: one push of a `vX.Y.Z` tag produces the connector
+# tarball (under tag `vX.Y.Z`) AND every action tarball (under tag
+# `actions/<name>/vX.Y.Z`), all pinned to the same connector content
+# hash. The cstore resolver expects per-FQN tags
+# (ADR-0004 §github://); the workflow honors that convention by
+# creating the per-action tags from a single workflow run rather than
+# making the publisher push them by hand.
 #
-# Both forms attach the corresponding tarball as a release asset.
-# Aileron's install pipeline resolves
-# `github://ALRubinger/aileron-connector-google@<ver>` to these assets.
+# Source action manifests carry `hash = "sha256:bound-at-release"` as a
+# placeholder; the workflow substitutes it with the real connector
+# hash before packing each action tarball. The committed source is a
+# template — only the published tarballs carry the real hash.
 
 on:
   push:
     tags:
       - "v*.*.*"
-      - "actions/*/v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
-  connector:
-    if: ${{ !startsWith(github.ref, 'refs/tags/actions/') }}
+  release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: connector/go.mod
+
+      - name: Validate manifest versions match the tag
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          expected_version="${tag#v}"
+
+          conflicts=0
+
+          connector_version=$(grep -E '^version = "' connector/manifest.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          if [ "$connector_version" != "$expected_version" ]; then
+            echo "::error file=connector/manifest.toml::version $connector_version does not match tag $tag (expected $expected_version)"
+            conflicts=$((conflicts + 1))
+          fi
+
+          for action_dir in actions/*/; do
+            action_md="$action_dir/action.md"
+            action_version=$(grep -E '^version = "' "$action_md" | head -1 | sed 's/version = "\(.*\)"/\1/')
+            if [ "$action_version" != "$expected_version" ]; then
+              echo "::error file=$action_md::version $action_version does not match tag $tag (expected $expected_version)"
+              conflicts=$((conflicts + 1))
+            fi
+          done
+
+          if [ "$conflicts" -gt 0 ]; then
+            echo "::error::$conflicts manifest(s) out of sync with tag — bump versions before tagging"
+            exit 1
+          fi
+          echo "All manifests at version $expected_version (matches $tag)"
 
       - name: Build connector WASM
         env:
@@ -37,7 +68,19 @@ jobs:
           cd connector
           go build -trimpath -ldflags="-s -w" -o ../connector.wasm .
 
-      - name: Sign payload (connector.wasm + manifest.toml)
+      - name: Compute connector content hash
+        id: hash
+        run: |
+          # Hash signs over `binary || manifest`, the canonical-hash
+          # input from ADR-0004. cstore.computeHash uses the same input
+          # at install time, so the hash printed here is what the
+          # install pipeline will derive on its end.
+          cat connector.wasm connector/manifest.toml > /tmp/connector-payload.bin
+          CONNECTOR_HASH="sha256:$(shasum -a 256 /tmp/connector-payload.bin | awk '{print $1}')"
+          echo "hash=$CONNECTOR_HASH" >> "$GITHUB_OUTPUT"
+          echo "Connector content hash: $CONNECTOR_HASH"
+
+      - name: Decode signing key
         env:
           AILERON_SIGNING_KEY: ${{ secrets.AILERON_SIGNING_KEY }}
         run: |
@@ -45,71 +88,80 @@ jobs:
             echo "::error::AILERON_SIGNING_KEY repo secret is not set"
             exit 1
           fi
+          umask 077
           printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > /tmp/aileron-signing.key
-          cat connector.wasm connector/manifest.toml > /tmp/payload.bin
-          openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key -in /tmp/payload.bin -out connector-payload.sig
-          rm -f /tmp/aileron-signing.key /tmp/payload.bin
 
-      - name: Pack tarball
+      - name: Sign + pack connector tarball
         run: |
+          openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
+            -in /tmp/connector-payload.bin -out connector-payload.sig
           tar czf aileron.tar.gz connector.wasm connector/manifest.toml connector-payload.sig
 
-      - name: Create / update GitHub release
+      - name: Publish connector release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --generate-notes --title "$tag"
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "$tag" \
+              --notes "Connector + actions release. Connector content hash: ${{ steps.hash.outputs.hash }}"
           fi
           gh release upload "$tag" aileron.tar.gz --clobber
 
-  action:
-    if: ${{ startsWith(github.ref, 'refs/tags/actions/') }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve action name
-        id: resolve
-        run: |
-          # Tag form: actions/<action-name>/vX.Y.Z
-          tag="${GITHUB_REF#refs/tags/}"
-          action="${tag#actions/}"
-          action="${action%/v*}"
-          if [ ! -f "actions/$action/action.md" ]; then
-            echo "::error::actions/$action/action.md not found"
-            exit 1
-          fi
-          echo "action=$action" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Sign action.md
-        env:
-          AILERON_SIGNING_KEY: ${{ secrets.AILERON_SIGNING_KEY }}
-        run: |
-          if [ -z "$AILERON_SIGNING_KEY" ]; then
-            echo "::error::AILERON_SIGNING_KEY repo secret is not set"
-            exit 1
-          fi
-          printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > /tmp/aileron-signing.key
-          openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
-            -in "actions/${{ steps.resolve.outputs.action }}/action.md" \
-            -out "action-payload.sig"
-          rm -f /tmp/aileron-signing.key
-
-      - name: Pack action tarball
-        run: |
-          tar czf "aileron-action.tar.gz" \
-            -C "actions/${{ steps.resolve.outputs.action }}" action.md \
-            -C "$GITHUB_WORKSPACE" action-payload.sig
-
-      - name: Create / update GitHub release
+      - name: Substitute, sign, pack, and publish each action
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONNECTOR_HASH: ${{ steps.hash.outputs.hash }}
         run: |
-          tag="${{ steps.resolve.outputs.tag }}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --generate-notes --title "$tag"
-          fi
-          gh release upload "$tag" aileron-action.tar.gz --clobber
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          mkdir -p /tmp/action-build
+
+          for action_dir in actions/*/; do
+            name="$(basename "$action_dir")"
+            action_tag="actions/$name/v$version"
+            staged="/tmp/action-build/$name"
+            mkdir -p "$staged"
+
+            # Substitute the placeholder with the real connector hash.
+            # Source manifest in the repo retains `sha256:bound-at-release`
+            # so the next release runs the same substitution against an
+            # unchanged template — no follow-up commit needed.
+            sed "s|sha256:bound-at-release|$CONNECTOR_HASH|g" \
+              "$action_dir/action.md" > "$staged/action.md"
+
+            if grep -q "sha256:bound-at-release" "$staged/action.md"; then
+              echo "::error file=$action_dir/action.md::placeholder still present after substitution"
+              exit 1
+            fi
+
+            # Sign the substituted manifest so the install pipeline can
+            # verify it against the publisher's keyring entry.
+            openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
+              -in "$staged/action.md" -out "$staged/action-payload.sig"
+
+            # Asset name is always `aileron.tar.gz` per the cstore
+            # resolver's `releaseAsset` constant — the resolver hard-codes
+            # the name regardless of whether the tag points at a
+            # connector or an action release.
+            tar czf "$staged/aileron.tar.gz" -C "$staged" action.md action-payload.sig
+
+            # Create the per-action release at the same commit the
+            # connector tag points at, so all artifacts in this version
+            # cohort share provenance.
+            if ! gh release view "$action_tag" >/dev/null 2>&1; then
+              gh release create "$action_tag" \
+                --target "$GITHUB_SHA" \
+                --title "$action_tag" \
+                --notes "Action release pinned to connector ${{ steps.hash.outputs.hash }}."
+            fi
+            gh release upload "$action_tag" "$staged/aileron.tar.gz" --clobber
+
+            echo "::notice::Published $action_tag"
+          done
+
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/aileron-signing.key

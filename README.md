@@ -144,20 +144,50 @@ through release / install / binding setup.
 
 ## Releasing
 
-Releases are tag-driven:
+**One tag, one workflow run, all artifacts.** The publisher pushes a
+single `vX.Y.Z` tag; CI builds the connector, computes the content
+hash, signs everything, and creates one connector release plus one
+release per action — each at the per-FQN tag the Aileron install
+pipeline expects.
 
-- **Connector release** — push tag `vX.Y.Z` (e.g. `v0.1.0`). The CI
-  workflow builds the WASM, packs `connector.wasm + manifest.toml`,
-  signs the payload with the ed25519 private key from the
-  `AILERON_SIGNING_KEY` repo secret, and attaches `aileron.tar.gz` to
-  the GitHub release.
-- **Action release** — push tag `actions/<action-name>/vX.Y.Z`
-  (e.g. `actions/list-recent-emails/v0.1.0`). The workflow packs the
-  action's `action.md`, signs it, and attaches the tarball to the
-  release.
+```sh
+# Bump version in connector/manifest.toml and every actions/*/action.md.
+# CI validates that manifest versions match the tag and fails fast
+# if they're out of sync, so this step is required.
+sed -i '' 's/version = "0.2.0"/version = "0.3.0"/' connector/manifest.toml actions/*/action.md
+sed -i '' 's|/aileron-connector-google@0.2.0|/aileron-connector-google@0.3.0|' actions/*/action.md
+git commit -am "chore: bump to v0.3.0"
 
-Aileron's install pipeline resolves `github://ALRubinger/aileron-connector-google@<ver>`
-to the corresponding GitHub release asset.
+git tag v0.3.0
+git push origin main v0.3.0
+# Wait ~2 minutes. Done — connector + 4 actions all published.
+```
+
+What CI does on each `vX.Y.Z` push:
+
+1. Validates every manifest's `version` field matches the tag.
+2. Builds `connector.wasm` (wasip1).
+3. Computes `sha256(connector.wasm || manifest.toml)` — the
+   canonical-hash input from ADR-0004.
+4. Signs the connector payload, packs `aileron.tar.gz`, publishes at
+   tag `vX.Y.Z`.
+5. For each `actions/*/action.md`: substitutes `sha256:bound-at-release`
+   with the real connector hash, signs the substituted manifest, packs
+   `aileron.tar.gz`, publishes at tag `actions/<name>/vX.Y.Z`.
+
+The committed source manifests keep `sha256:bound-at-release` as a
+permanent placeholder — they're release templates. Only the published
+tarballs carry the real hash. Each release runs the same substitution
+against the unchanged template, so version bumps are the only commits
+the publisher hand-edits before tagging.
+
+Aileron's install pipeline resolves
+`github://ALRubinger/aileron-connector-google@<ver>` to the connector
+release's `aileron.tar.gz`, and
+`github://ALRubinger/aileron-connector-google/actions/<name>@<ver>`
+to the per-action release's `aileron.tar.gz`. All artifacts in a
+version cohort share provenance — CI creates every per-action release
+at the same commit the connector tag points to.
 
 ## Trusting this publisher
 
