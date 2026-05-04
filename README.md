@@ -189,6 +189,24 @@ to the per-action release's `aileron.tar.gz`. All artifacts in a
 version cohort share provenance — CI creates every per-action release
 at the same commit the connector tag points to.
 
+### What you see on the releases page
+
+Each `vX.Y.Z` push produces one connector release plus one per-action
+release, all from the same commit. The connector release (tagged
+`vX.Y.Z`) carries the **Latest** badge; the per-action releases
+(tagged `actions/<name>/vX.Y.Z`) are marked **Pre-release** so the
+page anchors visually on the connector. Per-action tags are how
+Aileron's resolver locates artifacts — they aren't subordinate
+releases despite their tag prefix; they're sibling artifacts in the
+same cohort, all pinned to the same connector content hash. The
+release notes cross-link each release to its siblings so you can
+navigate the cohort from any starting point.
+
+This split is per-FQN-tag plumbing the resolver requires today
+(see ADR-0004 in the Aileron repo). Future versions of Aileron's
+Hub will present a single unified cohort view that hides the per-tag
+shape; until then, the GitHub releases page is the raw form.
+
 ## Trusting this publisher
 
 To install connectors from this repo, add the public key from

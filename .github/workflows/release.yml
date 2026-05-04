@@ -100,13 +100,34 @@ jobs:
       - name: Publish connector release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONNECTOR_HASH: ${{ steps.hash.outputs.hash }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+          base_url="https://github.com/$GITHUB_REPOSITORY/releases/tag"
+
+          # Build the connector release notes with links to every action
+          # release in this cohort. The action releases are published in
+          # the next step at predictable tags (actions/<name>/v<version>),
+          # so we can pre-compute their URLs here. Slashes in tags are
+          # URL-encoded as %2F per GitHub's release-tag URL convention.
+          notes="Connector release. Content hash: $CONNECTOR_HASH
+
+Actions in this cohort (all pinned to this connector hash):
+"
+          for action_dir in actions/*/; do
+            name="$(basename "$action_dir")"
+            action_tag="actions/$name/v$version"
+            escaped="$(printf '%s' "$action_tag" | sed 's|/|%2F|g')"
+            notes="${notes}- ${name}: ${base_url}/${escaped}
+"
+          done
+
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" \
               --target "$GITHUB_SHA" \
               --title "$tag" \
-              --notes "Connector + actions release. Connector content hash: ${{ steps.hash.outputs.hash }}"
+              --notes "$notes"
           fi
           gh release upload "$tag" aileron.tar.gz --clobber
 
@@ -117,11 +138,17 @@ jobs:
         run: |
           tag="${GITHUB_REF#refs/tags/}"
           version="${tag#v}"
+          base_url="https://github.com/$GITHUB_REPOSITORY/releases/tag"
+          connector_url="${base_url}/${tag}"
           mkdir -p /tmp/action-build
 
-          for action_dir in actions/*/; do
-            name="$(basename "$action_dir")"
+          # Pre-compute the action list once so each action's release
+          # notes can list its siblings.
+          action_names=$(for d in actions/*/; do basename "$d"; done | sort)
+
+          for name in $action_names; do
             action_tag="actions/$name/v$version"
+            action_dir="actions/$name"
             staged="/tmp/action-build/$name"
             mkdir -p "$staged"
 
@@ -148,14 +175,40 @@ jobs:
             # connector or an action release.
             tar czf "$staged/aileron.tar.gz" -C "$staged" action.md action-payload.sig
 
+            # Build cross-linked release notes pointing back to the
+            # connector and to every sibling action in the cohort. The
+            # current action is marked "(this release)" so the reader
+            # can orient.
+            notes="Action release. Pinned to connector $CONNECTOR_HASH.
+
+Cohort: $tag — $connector_url
+
+Sibling actions:
+"
+            for sibling in $action_names; do
+              if [ "$sibling" = "$name" ]; then
+                notes="${notes}- ${sibling} (this release)
+"
+              else
+                sibling_tag="actions/$sibling/v$version"
+                sibling_escaped="$(printf '%s' "$sibling_tag" | sed 's|/|%2F|g')"
+                notes="${notes}- ${sibling}: ${base_url}/${sibling_escaped}
+"
+              fi
+            done
+
             # Create the per-action release at the same commit the
             # connector tag points at, so all artifacts in this version
-            # cohort share provenance.
+            # cohort share provenance. --prerelease keeps the connector
+            # release as GitHub's "Latest" — the per-action releases are
+            # sibling artifacts in the same cohort, not a successor
+            # release stream.
             if ! gh release view "$action_tag" >/dev/null 2>&1; then
               gh release create "$action_tag" \
                 --target "$GITHUB_SHA" \
+                --prerelease \
                 --title "$action_tag" \
-                --notes "Action release pinned to connector ${{ steps.hash.outputs.hash }}."
+                --notes "$notes"
             fi
             gh release upload "$action_tag" "$staged/aileron.tar.gz" --clobber
 
