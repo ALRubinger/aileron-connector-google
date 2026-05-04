@@ -1,0 +1,125 @@
+# aileron-connector-google
+
+Aileron connector for Google APIs — read-only Gmail + Calendar at v0.1.0.
+
+This repo is the first reference connector for the Aileron action runtime
+(see [github.com/ALRubinger/aileron](https://github.com/ALRubinger/aileron)).
+It demonstrates the full publisher flow: WASM connector source, manifest
+declaring sandboxed capabilities and OAuth provider config, action
+templates with declared inputs, ed25519-signed release tarballs.
+
+## What it ships
+
+Two read-only operations at v0.1.0, both backed by Google's APIs:
+
+| Action | Op | Endpoint |
+|---|---|---|
+| `list-recent-emails` | `list_recent_emails` | `GET gmail.googleapis.com/gmail/v1/users/me/messages` |
+| `list-upcoming-events` | `list_upcoming_events` | `GET www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
+
+Both run inside the Aileron WASM sandbox with `[capabilities.network]`
+restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
+The connector never holds OAuth tokens — Aileron's runtime resolves the
+bound credential and injects `Authorization: Bearer <token>` host-side
+when the connector marks an outbound HTTP request with
+`credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
+docs).
+
+Write operations (sending mail, creating events) are deliberately out
+of scope for v0.1.0 — sensitive scopes require Google verification, and
+the demo target is "summarize my unread emails," which read scopes
+satisfy.
+
+## Demo path
+
+```sh
+# Install the connector and an action.
+aileron connector install github://ALRubinger/aileron-connector-google@0.1.0
+aileron action add github://ALRubinger/aileron-connector-google/actions/list-recent-emails@0.1.0
+
+# CLI auto-prompts for OAuth setup; complete the consent in the browser.
+# Aileron stores the refresh token in your local vault; the connector
+# never sees it.
+
+# Launch your agent. Aileron exposes the action via MCP.
+aileron launch claude
+
+# In the agent: "summarize my unread emails from this week"
+# The LLM picks list_recent_emails, Aileron executes it in the WASM
+# sandbox with the bound credential, returns the result, the LLM
+# summarizes.
+```
+
+## Repo layout
+
+```
+aileron-connector-google/
+├── connector/
+│   ├── main.go         # wasip1 source — calls aileron_host.* imports
+│   ├── go.mod
+│   └── manifest.toml   # capability declarations + OAuth provider config
+├── actions/
+│   ├── list-recent-emails/action.md
+│   └── list-upcoming-events/action.md
+├── keys/
+│   └── publisher.pub   # ed25519 public key — installed users add to
+│                       # ~/.aileron/keyring.json to trust this publisher
+├── Taskfile.yml        # local build
+└── .github/workflows/release.yml  # signed release on tag push
+```
+
+## Building locally
+
+```sh
+task build
+```
+
+Produces `connector.wasm` from `connector/main.go` (Go's native WASI
+Preview 1 target).
+
+## Releasing
+
+Releases are tag-driven:
+
+- **Connector release** — push tag `vX.Y.Z` (e.g. `v0.1.0`). The CI
+  workflow builds the WASM, packs `connector.wasm + manifest.toml`,
+  signs the payload with the ed25519 private key from the
+  `AILERON_SIGNING_KEY` repo secret, and attaches `aileron.tar.gz` to
+  the GitHub release.
+- **Action release** — push tag `actions/<action-name>/vX.Y.Z`
+  (e.g. `actions/list-recent-emails/v0.1.0`). The workflow packs the
+  action's `action.md`, signs it, and attaches the tarball to the
+  release.
+
+Aileron's install pipeline resolves `github://ALRubinger/aileron-connector-google@<ver>`
+to the corresponding GitHub release asset.
+
+## Trusting this publisher
+
+To install connectors from this repo, add the public key from
+`keys/publisher.pub` to your local keyring:
+
+```sh
+# One-time setup per user:
+mkdir -p ~/.aileron
+cat keys/publisher.pub | jq -R --arg authority 'github://ALRubinger/aileron-connector-google' \
+  '. as $key | {authorities: {($authority): {keys: [$key]}}}' \
+  >> ~/.aileron/keyring.json
+```
+
+(Or merge into an existing keyring manually.) Without the public key in
+the keyring, `aileron connector install` fails closed — see ADR-0004's
+verification rules in the Aileron docs.
+
+## OAuth setup (publisher side)
+
+This connector ships with a Google OAuth Desktop app `client_id`
+registered by the publisher; users do not register their own apps.
+Per ADR-0006, the runtime drives the OAuth dance via PKCE so no
+client secret is shipped or stored client-side. See the manifest's
+`[capabilities.credential.oauth2]` block for the configured
+authorize/token URLs and scopes.
+
+## License
+
+Apache-2.0.

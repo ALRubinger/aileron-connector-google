@@ -1,0 +1,60 @@
+version: "3"
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list-all
+    silent: true
+
+  build:
+    desc: Build the connector WASM binary
+    dir: connector
+    sources:
+      - main.go
+      - go.mod
+    generates:
+      - ../connector.wasm
+    env:
+      GOOS: wasip1
+      GOARCH: wasm
+    cmds:
+      - go build -trimpath -ldflags="-s -w" -o ../connector.wasm .
+
+  pack:
+    desc: Build and pack the connector tarball (connector.wasm + manifest.toml)
+    deps: [build]
+    cmds:
+      - rm -f connector-payload.bin connector-payload.sig
+      - cat connector.wasm connector/manifest.toml > connector-payload.bin
+      - |
+        if [ -z "$AILERON_SIGNING_KEY" ]; then
+          echo "AILERON_SIGNING_KEY env var not set; skipping signature"
+          exit 0
+        fi
+        printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > /tmp/aileron-signing.key
+        openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key -in connector-payload.bin -out connector-payload.sig
+        rm -f /tmp/aileron-signing.key
+      - tar czf aileron.tar.gz connector.wasm connector/manifest.toml connector-payload.sig 2>/dev/null || tar czf aileron.tar.gz connector.wasm connector/manifest.toml
+
+  pack:action:
+    desc: Pack a single action tarball. Usage: task pack:action ACTION=list-recent-emails
+    requires:
+      vars: [ACTION]
+    cmds:
+      - rm -f aileron-action-{{.ACTION}}.tar.gz
+      - tar czf aileron-action-{{.ACTION}}.tar.gz -C actions/{{.ACTION}} action.md
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f connector.wasm connector-payload.bin connector-payload.sig aileron.tar.gz aileron-action-*.tar.gz
+
+  test:
+    desc: Compile-check the connector source (smoke test — full integration runs in the Aileron repo's E2E suite)
+    dir: connector
+    env:
+      GOOS: wasip1
+      GOARCH: wasm
+    cmds:
+      - go build -o /dev/null .

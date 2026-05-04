@@ -1,0 +1,47 @@
+# Aileron connector manifest for github://ALRubinger/aileron-connector-google.
+#
+# Per ADR-0002 the manifest declares the connector's identity, what it
+# can talk to (network), and what credentials it needs to do so. The
+# runtime enforces these at the WASM sandbox boundary and at the action
+# boundary (defense in depth per ADR-0003 / ADR-0005).
+
+[connector]
+name = "github://ALRubinger/aileron-connector-google"
+version = "0.1.0"
+publisher = "ALRubinger"
+
+# Network capability — the only host:port pairs this connector is allowed
+# to dial. Anything else is denied at the sandbox boundary with class
+# capability_denied (ADR-0005 acceptance #3).
+[capabilities.network]
+hosts = [
+  "gmail.googleapis.com:443",
+  "www.googleapis.com:443",
+]
+
+# Credential capability — the kind of credential the runtime resolves and
+# injects on the connector's behalf. Per ADR-0005 the connector never
+# holds the credential bytes; the runtime sets `Authorization: Bearer
+# <token>` host-side when an outbound request marks itself as
+# `credential: "oauth2"`.
+[capabilities.credential]
+kind = "oauth2"
+scope = "Read your Gmail messages and Calendar events"
+
+# OAuth provider config — the runtime drives the OAuth dance using these
+# endpoints when the user runs `aileron binding setup`. Per ADR-0006 we
+# use PKCE (no client_secret shipped client-side); the publisher
+# registers a Desktop app with Google and ships only the client_id.
+#
+# `client_id` is intentionally a placeholder until the Google Cloud
+# Console registration completes — see docs/publisher-oauth-setup.md.
+# The runtime fails closed if a placeholder client_id is shipped to a
+# real release, so updating this field is gating on v0.1.0.
+[capabilities.credential.oauth2]
+authorize_url = "https://accounts.google.com/o/oauth2/v2/auth"
+token_url     = "https://oauth2.googleapis.com/token"
+client_id     = "REPLACE_WITH_GOOGLE_DESKTOP_APP_CLIENT_ID"
+scopes = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/calendar.readonly",
+]

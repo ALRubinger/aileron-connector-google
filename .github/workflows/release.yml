@@ -1,0 +1,115 @@
+name: Release
+
+# Tag-driven releases:
+#   - vX.Y.Z                        → connector tarball (connector.wasm + manifest.toml + signature)
+#   - actions/<action>/vX.Y.Z       → action tarball (action.md + signature)
+#
+# Both forms attach the corresponding tarball as a release asset.
+# Aileron's install pipeline resolves
+# `github://ALRubinger/aileron-connector-google@<ver>` to these assets.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "actions/*/v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  connector:
+    if: ${{ !startsWith(github.ref, 'refs/tags/actions/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: connector/go.mod
+
+      - name: Build connector WASM
+        env:
+          GOOS: wasip1
+          GOARCH: wasm
+        run: |
+          cd connector
+          go build -trimpath -ldflags="-s -w" -o ../connector.wasm .
+
+      - name: Sign payload (connector.wasm + manifest.toml)
+        env:
+          AILERON_SIGNING_KEY: ${{ secrets.AILERON_SIGNING_KEY }}
+        run: |
+          if [ -z "$AILERON_SIGNING_KEY" ]; then
+            echo "::error::AILERON_SIGNING_KEY repo secret is not set"
+            exit 1
+          fi
+          printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > /tmp/aileron-signing.key
+          cat connector.wasm connector/manifest.toml > /tmp/payload.bin
+          openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key -in /tmp/payload.bin -out connector-payload.sig
+          rm -f /tmp/aileron-signing.key /tmp/payload.bin
+
+      - name: Pack tarball
+        run: |
+          tar czf aileron.tar.gz connector.wasm connector/manifest.toml connector-payload.sig
+
+      - name: Create / update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --generate-notes --title "$tag"
+          fi
+          gh release upload "$tag" aileron.tar.gz --clobber
+
+  action:
+    if: ${{ startsWith(github.ref, 'refs/tags/actions/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve action name
+        id: resolve
+        run: |
+          # Tag form: actions/<action-name>/vX.Y.Z
+          tag="${GITHUB_REF#refs/tags/}"
+          action="${tag#actions/}"
+          action="${action%/v*}"
+          if [ ! -f "actions/$action/action.md" ]; then
+            echo "::error::actions/$action/action.md not found"
+            exit 1
+          fi
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Sign action.md
+        env:
+          AILERON_SIGNING_KEY: ${{ secrets.AILERON_SIGNING_KEY }}
+        run: |
+          if [ -z "$AILERON_SIGNING_KEY" ]; then
+            echo "::error::AILERON_SIGNING_KEY repo secret is not set"
+            exit 1
+          fi
+          printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > /tmp/aileron-signing.key
+          openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
+            -in "actions/${{ steps.resolve.outputs.action }}/action.md" \
+            -out "action-payload.sig"
+          rm -f /tmp/aileron-signing.key
+
+      - name: Pack action tarball
+        run: |
+          tar czf "aileron-action.tar.gz" \
+            -C "actions/${{ steps.resolve.outputs.action }}" action.md \
+            -C "$GITHUB_WORKSPACE" action-payload.sig
+
+      - name: Create / update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.resolve.outputs.tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --generate-notes --title "$tag"
+          fi
+          gh release upload "$tag" aileron-action.tar.gz --clobber
