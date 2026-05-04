@@ -46,13 +46,20 @@ Aileron's keyring is JSON at `~/.aileron/keyring.json`. The schema
 authority to a list of base64-encoded **raw 32-byte ed25519 public
 keys** — not PEM, not OpenSSH format.
 
-Extract the raw bytes from `publisher.pub`:
+**`publisher.pub` and the keyring entry are the same public key, in two
+encodings.** `publisher.pub` is the PEM form (`openssl pkey -pubout`
+output — wraps the 32-byte key in an ASN.1/DER SubjectPublicKeyInfo
+header). The keyring stores the underlying 32 raw bytes, base64-encoded.
+Same key, different packaging — Go's `crypto/ed25519` works with the
+raw form directly, so the keyring skips the SPKI wrapping.
+
+Extract the raw form from `publisher.pub`:
 
 ```sh
 # Decode PEM → DER (44-byte SubjectPublicKeyInfo for ed25519), drop the
 # 12-byte ASN.1/DER header, base64 the remaining 32-byte raw key.
-RAW_KEY=$(openssl pkey -in keys/publisher.pub -pubin -outform DER | tail -c 32 | base64)
-echo "$RAW_KEY"
+PUB_KEY_RAW=$(openssl pkey -in keys/publisher.pub -pubin -outform DER | tail -c 32 | base64)
+echo "$PUB_KEY_RAW"
 ```
 
 Then add it to the keyring (creating the file if it doesn't exist):
@@ -62,7 +69,7 @@ Then add it to the keyring (creating the file if it doesn't exist):
   "version": 1,
   "publishers": {
     "github://ALRubinger/aileron-connector-google": [
-      "<paste $RAW_KEY here>"
+      "<paste $PUB_KEY_RAW here>"
     ]
   }
 }
