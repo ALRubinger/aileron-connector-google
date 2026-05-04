@@ -88,9 +88,19 @@ jobs:
 
       - name: Sign + pack connector tarball
         run: |
+          # The Aileron install pipeline (internal/cstore/tarball.go)
+          # demands a flat archive with exactly three files at the root:
+          # connector.wasm, manifest.toml, signature.sig. Stage them
+          # into a clean directory and tar from there so neither
+          # `connector/` directory prefix nor non-canonical signature
+          # name leaks into the archive.
+          mkdir -p /tmp/connector-pack
           openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
-            -in /tmp/connector-payload.bin -out connector-payload.sig
-          tar czf aileron.tar.gz connector.wasm connector/manifest.toml connector-payload.sig
+            -in /tmp/connector-payload.bin -out /tmp/connector-pack/signature.sig
+          cp connector.wasm           /tmp/connector-pack/connector.wasm
+          cp connector/manifest.toml  /tmp/connector-pack/manifest.toml
+          tar czf aileron.tar.gz -C /tmp/connector-pack \
+            connector.wasm manifest.toml signature.sig
 
       - name: Publish connector release
         env:
@@ -165,15 +175,18 @@ jobs:
             fi
 
             # Sign the substituted manifest so the install pipeline can
-            # verify it against the publisher's keyring entry.
+            # verify it against the publisher's keyring entry. The
+            # signature filename is fixed at `signature.sig` by ADR-0004
+            # (internal/cstore/tarball.go::tarSignatureFile) — same
+            # convention as the connector tarball.
             openssl pkeyutl -sign -rawin -inkey /tmp/aileron-signing.key \
-              -in "$staged/action.md" -out "$staged/action-payload.sig"
+              -in "$staged/action.md" -out "$staged/signature.sig"
 
             # Asset name is always `aileron.tar.gz` per the cstore
             # resolver's `releaseAsset` constant — the resolver hard-codes
             # the name regardless of whether the tag points at a
             # connector or an action release.
-            tar czf "$staged/aileron.tar.gz" -C "$staged" action.md action-payload.sig
+            tar czf "$staged/aileron.tar.gz" -C "$staged" action.md signature.sig
 
             # Build cross-linked release notes pointing back to the
             # connector and to every sibling action in the cohort. The
