@@ -2,39 +2,88 @@
 
 Aileron's install pipeline (ADR-0004) verifies every connector and
 action download against the publisher's ed25519 public key. To trust
-this publisher, users add the contents of `publisher.pub` (committed
-once it's available) to their `~/.aileron/keyring.json`.
+this publisher, users add the raw public-key bytes (base64-encoded) to
+their `~/.aileron/keyring.json`.
+
+Two artifacts come out of the keypair generation:
+
+- `publisher.pub` (committed here, PEM format) — the canonical, human-
+  readable form. Anyone can derive the raw bytes from this.
+- The matching ed25519 private key, stored out-of-repo (1Password) and
+  base64-encoded into the `AILERON_SIGNING_KEY` GitHub Actions secret.
+  The release workflow uses it to sign release tarballs.
 
 ## Generating the keypair (publisher one-time setup)
 
 ```sh
-# Generate a fresh ed25519 keypair.
-openssl genpkey -algorithm ed25519 -out publisher.key
-openssl pkey -in publisher.key -pubout -out publisher.pub
+# 1. Generate. Private key lives in /tmp briefly; public goes here.
+openssl genpkey -algorithm ed25519 -out /tmp/publisher.key
+openssl pkey -in /tmp/publisher.key -pubout -out keys/publisher.pub
 
-# Encode the private key for the GitHub Actions secret.
-base64 -i publisher.key | pbcopy
+# 2. Encode the private key for the GitHub Actions secret.
+#    macOS:
+base64 -i /tmp/publisher.key | pbcopy
+#    Linux:
+# base64 < /tmp/publisher.key | xclip -selection clipboard
 
-# In GitHub: Settings → Secrets and variables → Actions → New repository
-# secret. Name: AILERON_SIGNING_KEY. Value: paste from clipboard.
+# 3. In GitHub: repo Settings → Secrets and variables → Actions →
+#    New repository secret. Name: AILERON_SIGNING_KEY. Value: paste.
 
-# Store publisher.key out-of-repo (1Password, etc.) and DELETE the local
-# file once the secret is set:
-rm publisher.key
+# 4. Save the PRIVATE key to 1Password (or your password manager of
+#    choice), then delete the local file:
+rm /tmp/publisher.key
 
-# Commit publisher.pub:
-git add publisher.pub
-git commit -m "feat(keys): add publisher signing key (public)"
+# 5. Commit the public key:
+git add keys/publisher.pub
+git commit -m "feat(keys): commit publisher signing public key"
+git push
 ```
 
 ## Trusting this publisher (consumer side)
 
+Aileron's keyring is JSON at `~/.aileron/keyring.json`. The schema
+(`internal/cstore/keyring_config.go::keyringFile`) maps an FQN
+authority to a list of base64-encoded **raw 32-byte ed25519 public
+keys** — not PEM, not OpenSSH format.
+
+Extract the raw bytes from `publisher.pub`:
+
 ```sh
-# Append to ~/.aileron/keyring.json — see ADR-0004 for the schema.
-mkdir -p ~/.aileron
-# (manual edit; tool support coming in #404 — see Aileron Phase 7)
+# Decode PEM → DER (44-byte SubjectPublicKeyInfo for ed25519), drop the
+# 12-byte ASN.1/DER header, base64 the remaining 32-byte raw key.
+RAW_KEY=$(openssl pkey -in keys/publisher.pub -pubin -outform DER | tail -c 32 | base64)
+echo "$RAW_KEY"
 ```
 
-The placeholder content of `publisher.pub` is empty until the keypair
-is generated; until that's done, the install pipeline fails closed for
-this publisher.
+Then add it to the keyring (creating the file if it doesn't exist):
+
+```json
+{
+  "version": 1,
+  "publishers": {
+    "github://ALRubinger/aileron-connector-google": [
+      "<paste $RAW_KEY here>"
+    ]
+  }
+}
+```
+
+If the file already has other publishers, add a new entry to the
+`publishers` map alongside them. Multiple keys per authority are
+supported — useful during key rotation (publisher ships under the new
+key while consumers still trust both).
+
+Without an entry in the keyring for this authority, `aileron connector
+install` fails closed with `ClassSignatureFailure` per ADR-0004's
+fail-modes table — unsigned or unverified binaries never reach disk.
+
+## Release-time signing flow
+
+For reference: when a `vX.Y.Z` tag is pushed, `.github/workflows/release.yml`
+base64-decodes the `AILERON_SIGNING_KEY` repo secret back to the PEM
+private key, signs `connector.wasm || manifest.toml` with
+`openssl pkeyutl -sign -rawin`, and attaches the signature to the
+release as `connector-payload.sig` (raw 64-byte ed25519 signature).
+Aileron's verify path (`internal/cstore/verify.go`) re-derives the same
+payload, matches against the publisher's keyring entry, and accepts on
+match.
