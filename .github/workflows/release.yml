@@ -106,28 +106,33 @@ jobs:
           version="${tag#v}"
           base_url="https://github.com/$GITHUB_REPOSITORY/releases/tag"
 
-          # Build the connector release notes with links to every action
-          # release in this cohort. The action releases are published in
+          # Build connector release notes with links to every action
+          # release in this cohort. Action releases are published in
           # the next step at predictable tags (actions/<name>/v<version>),
           # so we can pre-compute their URLs here. Slashes in tags are
           # URL-encoded as %2F per GitHub's release-tag URL convention.
-          notes="Connector release. Content hash: $CONNECTOR_HASH
-
-Actions in this cohort (all pinned to this connector hash):
-"
-          for action_dir in actions/*/; do
-            name="$(basename "$action_dir")"
-            action_tag="actions/$name/v$version"
-            escaped="$(printf '%s' "$action_tag" | sed 's|/|%2F|g')"
-            notes="${notes}- ${name}: ${base_url}/${escaped}
-"
-          done
+          # Building the notes via echo > file (rather than a bash
+          # multi-line string literal) keeps every script line indented
+          # at the YAML block's column — multi-line literals at column 0
+          # break YAML parsing inside `run: |` blocks.
+          notes_file=/tmp/connector-notes.md
+          {
+            echo "Connector release. Content hash: $CONNECTOR_HASH"
+            echo ""
+            echo "Actions in this cohort (all pinned to this connector hash):"
+            for action_dir in actions/*/; do
+              name="$(basename "$action_dir")"
+              action_tag="actions/$name/v$version"
+              escaped="$(printf '%s' "$action_tag" | sed 's|/|%2F|g')"
+              echo "- ${name}: ${base_url}/${escaped}"
+            done
+          } > "$notes_file"
 
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" \
               --target "$GITHUB_SHA" \
               --title "$tag" \
-              --notes "$notes"
+              --notes-file "$notes_file"
           fi
           gh release upload "$tag" aileron.tar.gz --clobber
 
@@ -178,24 +183,26 @@ Actions in this cohort (all pinned to this connector hash):
             # Build cross-linked release notes pointing back to the
             # connector and to every sibling action in the cohort. The
             # current action is marked "(this release)" so the reader
-            # can orient.
-            notes="Action release. Pinned to connector $CONNECTOR_HASH.
-
-Cohort: $tag — $connector_url
-
-Sibling actions:
-"
-            for sibling in $action_names; do
-              if [ "$sibling" = "$name" ]; then
-                notes="${notes}- ${sibling} (this release)
-"
-              else
-                sibling_tag="actions/$sibling/v$version"
-                sibling_escaped="$(printf '%s' "$sibling_tag" | sed 's|/|%2F|g')"
-                notes="${notes}- ${sibling}: ${base_url}/${sibling_escaped}
-"
-              fi
-            done
+            # can orient. As with the connector notes, we write to a
+            # file rather than build a bash multi-line string so every
+            # YAML script line stays at the block's indent column.
+            notes_file="$staged/notes.md"
+            {
+              echo "Action release. Pinned to connector $CONNECTOR_HASH."
+              echo ""
+              echo "Cohort: $tag — $connector_url"
+              echo ""
+              echo "Sibling actions:"
+              for sibling in $action_names; do
+                if [ "$sibling" = "$name" ]; then
+                  echo "- ${sibling} (this release)"
+                else
+                  sibling_tag="actions/$sibling/v$version"
+                  sibling_escaped="$(printf '%s' "$sibling_tag" | sed 's|/|%2F|g')"
+                  echo "- ${sibling}: ${base_url}/${sibling_escaped}"
+                fi
+              done
+            } > "$notes_file"
 
             # Create the per-action release at the same commit the
             # connector tag points at, so all artifacts in this version
@@ -208,7 +215,7 @@ Sibling actions:
                 --target "$GITHUB_SHA" \
                 --prerelease \
                 --title "$action_tag" \
-                --notes "$notes"
+                --notes-file "$notes_file"
             fi
             gh release upload "$action_tag" "$staged/aileron.tar.gz" --clobber
 
