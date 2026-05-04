@@ -1,11 +1,11 @@
 +++
 name = "list-upcoming-events"
-version = "0.3.0"
-source = "github://ALRubinger/aileron-connector-google/actions/list-upcoming-events@0.3.0"
+version = "0.0.1"
+source = "github://ALRubinger/aileron-connector-google/actions/list-upcoming-events@0.0.1"
 
 [[requires.connectors]]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.3.0"
+version = "0.0.1"
 # `hash` is the connector tarball's content-addressed identity per
 # ADR-0002. CI substitutes this placeholder with the real hash at
 # release time (see .github/workflows/release.yml). The committed

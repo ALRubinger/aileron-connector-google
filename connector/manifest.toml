@@ -7,7 +7,7 @@
 
 [connector]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.3.0"
+version = "0.0.1"
 publisher = "ALRubinger"
 
 # Network capability — the only host:port pairs this connector is allowed
@@ -37,7 +37,7 @@ scope = "Read your Gmail messages and Calendar events; create drafts and calenda
 # Console registration completes — see README.md "OAuth setup
 # (publisher side)". The runtime fails closed if a placeholder
 # client_id is shipped to a real release, so updating this field is
-# gating on v0.1.0.
+# gating on v0.0.1.
 #
 # Scope set is front-loaded across the read + write capabilities the
 # connector ships at v0.x. Per the README's scope-expansion table,

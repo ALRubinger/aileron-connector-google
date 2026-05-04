@@ -13,7 +13,7 @@ import "strings"
 // body to follow the same wire format an SMTP server would handle:
 // CRLF-terminated headers, blank line, body. Encoding is the caller's
 // concern — Gmail accepts UTF-8 in headers (Q-encoded for non-ASCII)
-// but plain ASCII bodies and subjects are the safe v0.1.0 path.
+// but plain ASCII bodies and subjects are the safe v0.0.1 path.
 func buildRFC2822(to, cc, bcc, subject, body string) string {
 	var b strings.Builder
 	b.WriteString("To: ")

@@ -1,6 +1,6 @@
 # aileron-connector-google
 
-Aileron connector for Google APIs — read-only Gmail + Calendar at v0.1.0.
+Aileron connector for Google APIs — Gmail + Calendar read/write at v0.0.1.
 
 This repo is the first reference connector for the Aileron action runtime
 (see [github.com/ALRubinger/aileron](https://github.com/ALRubinger/aileron)).
@@ -10,7 +10,7 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Four operations at v0.1.0, two read + two write, across Gmail and
+Four operations at v0.0.1, two read + two write, across Gmail and
 Calendar:
 
 | Action | Op | HTTP | Endpoint |
@@ -42,8 +42,8 @@ later v0.x consideration.
 
 ```sh
 # Install the connector and an action.
-aileron connector install github://ALRubinger/aileron-connector-google@0.1.0
-aileron action add github://ALRubinger/aileron-connector-google/actions/list-recent-emails@0.1.0
+aileron connector install github://ALRubinger/aileron-connector-google@0.0.1
+aileron action add github://ALRubinger/aileron-connector-google/actions/list-recent-emails@0.0.1
 
 # CLI auto-prompts for OAuth setup; complete the consent in the browser.
 # Aileron stores the refresh token in your local vault; the connector
@@ -154,12 +154,12 @@ pipeline expects.
 # Bump version in connector/manifest.toml and every actions/*/action.md.
 # CI validates that manifest versions match the tag and fails fast
 # if they're out of sync, so this step is required.
-sed -i '' 's/version = "0.2.0"/version = "0.3.0"/' connector/manifest.toml actions/*/action.md
-sed -i '' 's|/aileron-connector-google@0.2.0|/aileron-connector-google@0.3.0|' actions/*/action.md
-git commit -am "chore: bump to v0.3.0"
+sed -i '' 's/version = "0.0.1"/version = "0.0.2"/' connector/manifest.toml actions/*/action.md
+sed -i '' 's|/aileron-connector-google@0.0.1|/aileron-connector-google@0.0.2|' actions/*/action.md
+git commit -am "chore: bump to v0.0.2"
 
-git tag v0.3.0
-git push origin main v0.3.0
+git tag v0.0.2
+git push origin main v0.0.2
 # Wait ~2 minutes. Done — connector + 4 actions all published.
 ```
 
@@ -269,7 +269,7 @@ set:
 | Scope | Tier | Used by |
 |---|---|---|
 | `gmail.readonly` | Restricted | `list-recent-emails` |
-| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send at v0.1.0) |
+| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send at v0.0.1) |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
 

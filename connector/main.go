@@ -148,7 +148,7 @@ func main() {
 //
 // Output: the raw Gmail messages.list JSON (a list of {id, threadId} pairs
 // plus paging metadata). Resolving message bodies is left to subsequent
-// actions / agent reasoning at v0.1.0 to keep the call cost bounded.
+// actions / agent reasoning at v0.0.1 to keep the call cost bounded.
 func listRecentEmails(args map[string]any) {
 	query, _ := args["query"].(string)
 	maxResults := readMaxResults(args, 10)

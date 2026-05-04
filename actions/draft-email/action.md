@@ -1,11 +1,11 @@
 +++
 name = "draft-email"
-version = "0.3.0"
-source = "github://ALRubinger/aileron-connector-google/actions/draft-email@0.3.0"
+version = "0.0.1"
+source = "github://ALRubinger/aileron-connector-google/actions/draft-email@0.0.1"
 
 [[requires.connectors]]
 name = "github://ALRubinger/aileron-connector-google"
-version = "0.3.0"
+version = "0.0.1"
 # `hash` is the connector tarball's content-addressed identity per
 # ADR-0002. CI substitutes this placeholder with the real hash at
 # release time (see .github/workflows/release.yml). The committed
@@ -59,7 +59,7 @@ required = false
 Composes an email and saves it to the user's Gmail drafts folder. The
 draft is **not sent** — the user reviews the draft in Gmail and
 chooses to send (or edit, or discard) from there. This is the safer
-shape for v0.1.0: agents produce drafts, humans send.
+shape for v0.0.1: agents produce drafts, humans send.
 
 When it fires:
 - "draft a reply to alice saying we'll have the migration done by Friday"
