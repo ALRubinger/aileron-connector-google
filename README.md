@@ -25,10 +25,11 @@ when the connector marks an outbound HTTP request with
 `credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
 docs).
 
-Write operations (sending mail, creating events) are deliberately out
-of scope for v0.1.0 — sensitive scopes require Google verification, and
-the demo target is "summarize my unread emails," which read scopes
-satisfy.
+Write operations (sending mail, creating events) are not in v0.1.0's
+acceptance set but are in scope for v0.x — see [Scope expansion](#scope-expansion)
+below. They cost no extra Google verification time over what the
+read-only scopes already require (write and read share the same
+verification tier per scope), so adding them later is cheap.
 
 ## Demo path
 
@@ -119,6 +120,51 @@ Per ADR-0006, the runtime drives the OAuth dance via PKCE so no
 client secret is shipped or stored client-side. See the manifest's
 `[capabilities.credential.oauth2]` block for the configured
 authorize/token URLs and scopes.
+
+### Demo before verification: Google's "Testing" publishing status
+
+Google's OAuth verification (required for production publishing of
+"sensitive" or "restricted" scope apps) takes days for sensitive
+scopes (Calendar) and weeks for restricted scopes (Gmail). To demo
+the connector against real Google APIs *during* that review window,
+keep the OAuth consent screen in **Testing** publishing status:
+
+1. Google Cloud Console → APIs & Services → OAuth consent screen.
+2. Publishing status: **Testing**.
+3. Test users: add up to 100 Google account emails (yourself, anyone
+   you're demoing to). Test users skip Google's verified-app gate but
+   see an "unverified app" warning at consent — they click
+   *Advanced → Go to <app> (unsafe)* to proceed.
+
+In Testing mode the connector functions identically to production —
+all the same scopes are issuable; the OAuth dance, capability
+binding, and credential mediation in the Aileron runtime work
+unchanged. **One catch:** refresh tokens issued in Testing mode
+expire after 7 days. Test users redo the OAuth dance weekly via
+`aileron binding rebind`.
+
+When the verification submission clears, switch publishing status to
+**In production**. Refresh tokens issued thereafter become long-lived
+and the test-user list stops applying.
+
+### Scope expansion
+
+The verification tier is per-scope; the cost is per-tier, not
+per-scope. Adding new scopes within an already-verified tier costs
+zero additional verification time. The connector's eventual scope
+set:
+
+| Scope | Tier | Status at v0.1.0 |
+|---|---|---|
+| `gmail.readonly` | Restricted | Shipped |
+| `calendar.readonly` | Sensitive | Shipped |
+| `calendar.events` (read+write) | Sensitive | Tracked for v0.x; same submission as `calendar.readonly` |
+| `gmail.compose` (drafts+send) | Restricted | Tracked for v0.x; same submission as `gmail.readonly` |
+
+Submit the full scope list at once when registering the OAuth app, so
+all scopes go through verification together. Restricted scopes also
+require an annual CASA security re-review once verified — front-load
+the scopes you know you want.
 
 ## License
 
