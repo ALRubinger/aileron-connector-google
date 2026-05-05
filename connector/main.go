@@ -27,6 +27,10 @@
 //	 "args": {"to": "alice@example.com", "subject": "...", "body": "..."}}
 //	  → {"output": {"id": "...", "message": {...}}}
 //
+//	{"op": "send_email",
+//	 "args": {"to": "alice@example.com", "subject": "...", "body": "..."}}
+//	  → {"output": {"id": "...", "threadId": "...", "labelIds": [...]}}
+//
 //	{"op": "create_calendar_event",
 //	 "args": {"title": "...", "start_time": "2026-05-04T15:00:00-07:00",
 //	          "end_time": "2026-05-04T16:00:00-07:00",
@@ -40,10 +44,14 @@
 // host-side. The connector never holds the OAuth token.
 //
 // Idempotency: the read ops (list_*) are idempotent by their HTTP
-// shape (GET). The write ops (draft_email, create_calendar_event) are
-// NOT idempotent — repeating them creates duplicate drafts/events.
-// Action manifests using these ops MUST set [[execute]].idempotent =
-// false so the gateway's retry layer (ADR-0010) does not double-write.
+// shape (GET). The write ops (draft_email, send_email,
+// create_calendar_event) are NOT idempotent — repeating them creates
+// duplicate drafts/messages/events. Action manifests using these ops
+// MUST set [[execute]].idempotent = false so the gateway's retry layer
+// (ADR-0010) does not double-write. send_email additionally requires
+// per-call user approval at the action layer (see
+// actions/send-email/action.md) since dispatched mail is not
+// recoverable the way a draft is.
 //
 //go:build wasip1
 
@@ -134,6 +142,8 @@ func main() {
 		listUpcomingEvents(in.Args)
 	case "draft_email":
 		draftEmail(in.Args)
+	case "send_email":
+		sendEmail(in.Args)
 	case "create_calendar_event":
 		createCalendarEvent(in.Args)
 	default:
@@ -331,6 +341,69 @@ func draftEmail(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		writeError("connector_runtime_error", "draft_email: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// sendEmail dispatches an email via users.messages.send.
+//
+//	POST https://gmail.googleapis.com/gmail/v1/users/me/messages/send
+//	Body: {"raw": "<base64url(RFC 2822)>"}
+//
+// Unlike draft_email, the message leaves the user's outbox immediately
+// — there is no "review in Gmail Drafts" step. The action manifest
+// gates this op behind Aileron's per-call approval mechanism so the
+// runtime asks the user before dispatch; on denial the connector is
+// never invoked and no quota is burned.
+//
+// Args:
+//
+//	to       (string, required) — comma-separated recipient addresses.
+//	subject  (string, required) — the Subject header.
+//	body     (string, required) — message body (text/plain).
+//	cc       (string, optional) — comma-separated Cc addresses.
+//	bcc      (string, optional) — comma-separated Bcc addresses.
+//
+// Output: the sent message's API representation (id, threadId, labelIds).
+//
+// NOTE: NOT idempotent. The action manifest MUST declare
+// [[execute]].idempotent = false AND [approval].required = true so the
+// runtime gates dispatch behind user approval and the gateway retry
+// layer does not produce duplicate sends.
+func sendEmail(args map[string]any) {
+	to, _ := args["to"].(string)
+	subject, _ := args["subject"].(string)
+	body, _ := args["body"].(string)
+	if to == "" || subject == "" || body == "" {
+		writeError("connector_runtime_error", "send_email: to, subject, and body are required")
+		return
+	}
+	cc, _ := args["cc"].(string)
+	bcc, _ := args["bcc"].(string)
+
+	rfc2822 := buildRFC2822(to, cc, bcc, subject, body)
+	encoded := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(rfc2822))
+
+	reqBody, err := json.Marshal(map[string]any{"raw": encoded})
+	if err != nil {
+		writeError("connector_runtime_error", "send_email: encode request: "+err.Error())
+		return
+	}
+
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+	respBody, status, err := doAuthenticatedJSON("POST", target, reqBody)
+	if err != nil {
+		writeError("connector_runtime_error", "send_email: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("Gmail API returned %d: %s", status, string(respBody)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		writeError("connector_runtime_error", "send_email: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)
