@@ -10,7 +10,7 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Five operations, three read + two write, across Gmail and Calendar:
+Six operations, three read + three write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
@@ -18,6 +18,7 @@ Five operations, three read + two write, across Gmail and Calendar:
 | `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
+| `send-email` | `send_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/messages/send` |
 | `create-calendar-event` | `create_calendar_event` | POST | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 
 `list-recent-emails` returns `{id, threadId}` pairs only — the cheapest
@@ -34,15 +35,21 @@ when the connector marks an outbound HTTP request with
 `credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
 docs).
 
-The two write ops are **not idempotent** — invoking them twice creates
-duplicate drafts/events. Their action manifests declare
-`[[execute]].idempotent = false` so the gateway's retry layer
+The three write ops are **not idempotent** — invoking them twice
+creates duplicate drafts/messages/events. Their action manifests
+declare `[[execute]].idempotent = false` so the gateway's retry layer
 (ADR-0010) does not double-write on transient failures.
 
-`draft-email` deliberately creates drafts only — it does not send.
-Sending stays the user's choice from Gmail's drafts folder. A
-dedicated `send-email` action with explicit per-call approval is a
-later v0.x consideration.
+`draft-email` and `send-email` split the email-write flow on
+reversibility. `draft-email` is the safer default — it lands a draft
+in Gmail's Drafts folder; the user reviews and sends (or edits, or
+discards) from there. `send-email` dispatches immediately and is
+gated on Aileron's per-call approval mechanism: the runtime asks the
+user via the launch-comms channel before invoking the connector, so
+there is still a human-in-the-loop step before any byte hits Google
+— it just moves from Gmail's UI to Aileron's CLI / webapp prompt.
+Reach for `send-email` only when skipping the manual Gmail click is
+worth the approval prompt.
 
 ## Demo path
 
@@ -79,6 +86,7 @@ aileron-connector-google/
 │   ├── get-email/action.md
 │   ├── list-upcoming-events/action.md
 │   ├── draft-email/action.md
+│   ├── send-email/action.md
 │   └── create-calendar-event/action.md
 ├── keys/
 │   └── publisher.pub   # ed25519 public key — installed users add to
@@ -314,7 +322,7 @@ set:
 | Scope | Tier | Used by |
 |---|---|---|
 | `gmail.readonly` | Restricted | `list-recent-emails`, `get-email` |
-| `gmail.compose` | Restricted | `draft-email` (drafts only — not used for send) |
+| `gmail.compose` | Restricted | `draft-email`, `send-email` |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
 
