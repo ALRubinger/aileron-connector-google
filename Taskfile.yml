@@ -63,7 +63,10 @@ tasks:
     desc: Run unit tests for the pure helpers (host platform; no WASM)
     dir: connector
     cmds:
-      - go test -v -count=1 -cover ./...
+      # -coverprofile implies -cover and additionally writes the
+      # profile to disk for upload to Codecov by CI. Locally the file
+      # is harmless — it's gitignored via *.out.
+      - go test -v -count=1 -coverprofile=coverage.out ./...
 
   test:wasip1:
     desc: Smoke-check the connector compiles for the wasip1 target
