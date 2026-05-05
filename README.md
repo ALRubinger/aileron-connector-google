@@ -40,16 +40,32 @@ creates duplicate drafts/messages/events. Their action manifests
 declare `[[execute]].idempotent = false` so the gateway's retry layer
 (ADR-0010) does not double-write on transient failures.
 
-`draft-email` and `send-email` split the email-write flow on
-reversibility. `draft-email` is the safer default — it lands a draft
-in Gmail's Drafts folder; the user reviews and sends (or edits, or
-discards) from there. `send-email` dispatches immediately and is
-gated on Aileron's per-call approval mechanism: the runtime asks the
-user via the launch-comms channel before invoking the connector, so
-there is still a human-in-the-loop step before any byte hits Google
-— it just moves from Gmail's UI to Aileron's CLI / webapp prompt.
-Reach for `send-email` only when skipping the manual Gmail click is
-worth the approval prompt.
+The three write actions split on reversibility, and that drives
+which ones gate on Aileron's per-call approval mechanism (the runtime
+prompts the user via the launch-comms channel — CLI or the webapp
+`/approvals` surface — before invoking the connector; on denial
+nothing reaches Google):
+
+- **`draft-email` — un-gated.** Drafts land in Gmail's Drafts folder
+  and are fully reversible. The user already has a built-in
+  human-in-the-loop step (clicking Send in Gmail), so a runtime
+  prompt would duplicate that review without adding safety. Reach
+  for this for unattended flows where the cost of a stale draft is
+  near zero.
+- **`send-email` — gated.** Dispatched mail is not reversible. The
+  approval step moves from Gmail's UI to Aileron's prompt; it does
+  not disappear. Reach for this when skipping the manual Gmail click
+  is worth the approval prompt.
+- **`create-calendar-event` — gated.** Calendar's `events.insert`
+  dispatches invitation emails to attendees as part of event
+  creation, and those notifications don't retract cleanly when the
+  event is later deleted. That irreversibility makes a calendar
+  insert closer to a send than to a draft.
+
+The gating posture is per-action and recorded in each action.md's
+`[approval]` block (or the comment explaining its absence). Future
+write actions inherit nothing — each one's gating is its own
+judgment call.
 
 ## Demo path
 
