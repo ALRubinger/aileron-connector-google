@@ -28,6 +28,20 @@ connector = "github://ALRubinger/aileron-connector-google"
 op = "create_calendar_event"
 idempotent = false
 
+# Per-call approval gate. The runtime asks the user via the
+# launch-comms channel before dispatching to Calendar (see
+# ALRubinger/aileron#421 for the manifest field + MCP signaling
+# contract). On approval the connector runs; on denial the connector
+# is never invoked, no quota is burned, and the runtime audit-logs
+# the deny. create_calendar_event is gated because Calendar's
+# events.insert dispatches invitation emails to the listed attendees
+# as part of event creation — those "X invited you" notifications
+# don't retract cleanly when the event is later deleted, so the call
+# is closer to a send than to a draft. See issue #6 for the
+# per-action gating rationale.
+[approval]
+required = true
+
 [[inputs]]
 name = "title"
 type = "string"
@@ -89,10 +103,20 @@ When it fires:
 - "set up the Q3 planning meeting on July 15 from 10 to noon"
 
 This action **creates a real event** on the user's calendar and
-**sends invitations** to listed attendees. It is **not idempotent** —
-invoking it twice creates two events with two sets of invitations.
-The runtime's retry layer honors that and will not double-write on
-transient failure.
+**sends invitations** to listed attendees. Because invitation emails
+are not reversible — recipients see "X invited you" notifications
+that don't retract when the event is later deleted — this action is
+**gated on per-call user approval**. When the agent calls
+`create_calendar_event`, the Aileron runtime pauses the call and asks
+the user to approve via the launch-comms channel (CLI prompt or the
+webapp `/approvals` surface). The Calendar API is not contacted until
+approval is granted; on denial the call returns an error to the agent
+and is recorded in the audit log. See ADR-0009 (user channel — agent
+in trust path) for the rationale.
+
+It is **not idempotent** — invoking it twice creates two events with
+two sets of invitations. The runtime's retry layer honors that and
+will not double-write on transient failure.
 
 The connector runs in the Aileron WASM sandbox with
 `[capabilities.network]` restricted to `www.googleapis.com:443`, and

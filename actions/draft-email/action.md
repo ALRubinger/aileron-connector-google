@@ -28,6 +28,16 @@ connector = "github://ALRubinger/aileron-connector-google"
 op = "draft_email"
 idempotent = false
 
+# No `[approval]` block here — the absence is deliberate. Drafts land
+# in Gmail's Drafts folder and are fully reversible (the user can
+# discard or edit before sending), and Gmail's UI already provides
+# the human-in-the-loop review step (the user clicks Send from the
+# Drafts folder). A runtime-level approval prompt would duplicate
+# that review without adding safety, and would penalize the
+# safer-by-default action with extra friction relative to send-email.
+# See issue #6 for the per-action gating rationale across the
+# connector's write actions.
+
 [[inputs]]
 name = "to"
 type = "string"
