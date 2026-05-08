@@ -1,4 +1,4 @@
-name = "aileron-connector-google"
+name = "gmail-and-google-calendar"
 description = "Read and draft Gmail; read and create calendar events; send mail and create events with per-call approval."
 
 actions = [
