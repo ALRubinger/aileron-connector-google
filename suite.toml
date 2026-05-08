@@ -1,0 +1,11 @@
+name = "gmail-and-google-calendar"
+description = "Read and draft Gmail; read and create calendar events; send mail and create events with per-call approval."
+
+actions = [
+  "actions/list-recent-emails",
+  "actions/get-email",
+  "actions/list-upcoming-events",
+  "actions/draft-email",
+  "actions/send-email",
+  "actions/create-calendar-event",
+]
