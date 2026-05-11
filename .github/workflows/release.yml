@@ -31,9 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@83c916d7121abbe61c12c679ba2a1788096dab32
+      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@114e7470b97ea98816e8910231e59e0b5d54030b
 
-      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@83c916d7121abbe61c12c679ba2a1788096dab32
+      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@114e7470b97ea98816e8910231e59e0b5d54030b
 
       - name: Substitute placeholder OAuth client_secret in connector manifest
         env:
@@ -80,12 +80,12 @@ jobs:
           echo "Substituted GOOGLE_OAUTH_CLIENT_SECRET into connector/manifest.toml"
 
       - id: connector
-        uses: ALRubinger/aileron-actions/actions/sign-and-publish@83c916d7121abbe61c12c679ba2a1788096dab32
+        uses: ALRubinger/aileron-actions/actions/sign-and-publish@114e7470b97ea98816e8910231e59e0b5d54030b
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@83c916d7121abbe61c12c679ba2a1788096dab32
+      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@114e7470b97ea98816e8910231e59e0b5d54030b
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
