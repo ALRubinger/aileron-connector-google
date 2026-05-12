@@ -10,12 +10,13 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Seven operations, three read + four write, across Gmail and Calendar:
+Eight operations, four read + four write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
 | `list-recent-emails` | `list_recent_emails` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages` |
 | `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata` |
+| `get-draft` | `get_draft` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `send-email` | `send_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/messages/send` |
@@ -28,7 +29,7 @@ metadata (subject, from, snippet) for one or more results. Agent flows
 that summarize the inbox typically fan out parallel `get-email` calls
 after one `list-recent-emails`.
 
-All five run inside the Aileron WASM sandbox with `[capabilities.network]`
+All eight run inside the Aileron WASM sandbox with `[capabilities.network]`
 restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
 The connector never holds OAuth tokens — Aileron's runtime resolves the
 bound credential and injects `Authorization: Bearer <token>` host-side
@@ -63,7 +64,16 @@ nothing reaches Google):
   the draft is dispatched it is no longer recoverable. The fact that
   the draft already existed in Gmail doesn't lower the irreversibility,
   so the approval prompt stays. Pairs with `draft-email` for an
-  agent-drafts-then-user-approves-and-sends flow.
+  agent-drafts-then-user-approves-and-sends flow. Unlike `send-email`,
+  whose `to` / `subject` / `body` inputs are sufficient for the
+  approval prompt to render, `send-draft` takes a single opaque
+  `draft_id`. The manifest declares an `[approval.preview]` block
+  (ADR-0016) pointing at `get_draft`; the runtime fetches the draft
+  from Gmail at approval time and renders authoritative To / Subject /
+  snippet in the prompt. That is why this connector also ships the
+  read-only `get-draft` action — it is the preview op send-draft's
+  approval relies on, and is independently useful for chat-time
+  draft inspection.
 - **`create-calendar-event` — gated.** Calendar's `events.insert`
   dispatches invitation emails to attendees as part of event
   creation, and those notifications don't retract cleanly when the
