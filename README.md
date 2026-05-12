@@ -10,12 +10,13 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Eight operations, four read + four write, across Gmail and Calendar:
+Nine operations, five read + four write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
 | `list-recent-emails` | `list_recent_emails` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages` |
 | `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata` |
+| `list-drafts` | `list_drafts` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `get-draft` | `get_draft` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
@@ -29,7 +30,7 @@ metadata (subject, from, snippet) for one or more results. Agent flows
 that summarize the inbox typically fan out parallel `get-email` calls
 after one `list-recent-emails`.
 
-All eight run inside the Aileron WASM sandbox with `[capabilities.network]`
+All nine run inside the Aileron WASM sandbox with `[capabilities.network]`
 restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
 The connector never holds OAuth tokens — Aileron's runtime resolves the
 bound credential and injects `Authorization: Bearer <token>` host-side
@@ -118,6 +119,7 @@ aileron-connector-google/
 ├── actions/
 │   ├── list-recent-emails/action.md
 │   ├── get-email/action.md
+│   ├── list-drafts/action.md
 │   ├── list-upcoming-events/action.md
 │   ├── draft-email/action.md
 │   ├── send-email/action.md

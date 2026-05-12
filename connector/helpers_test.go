@@ -162,6 +162,57 @@ func TestNormalizeAttendees_UnsupportedTypeReturnsNil(t *testing.T) {
 	}
 }
 
+// --- buildListDraftsURL ---
+
+func TestBuildListDraftsURL_BaseEndpoint(t *testing.T) {
+	got := buildListDraftsURL("", 10, "")
+	const prefix = "https://gmail.googleapis.com/gmail/v1/users/me/drafts?"
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("got %q, want prefix %q", got, prefix)
+	}
+}
+
+func TestBuildListDraftsURL_AlwaysSetsMaxResults(t *testing.T) {
+	got := buildListDraftsURL("", 25, "")
+	if !strings.Contains(got, "maxResults=25") {
+		t.Errorf("missing maxResults=25 in %q", got)
+	}
+}
+
+func TestBuildListDraftsURL_OmitsEmptyOptionals(t *testing.T) {
+	got := buildListDraftsURL("", 10, "")
+	if strings.Contains(got, "q=") {
+		t.Errorf("empty query should be omitted; got %q", got)
+	}
+	if strings.Contains(got, "pageToken=") {
+		t.Errorf("empty page_token should be omitted; got %q", got)
+	}
+}
+
+func TestBuildListDraftsURL_IncludesQueryWhenSet(t *testing.T) {
+	got := buildListDraftsURL("subject:invoice", 10, "")
+	// url.Values encodes ":" as "%3A".
+	if !strings.Contains(got, "q=subject%3Ainvoice") {
+		t.Errorf("missing url-encoded q=subject:invoice in %q", got)
+	}
+}
+
+func TestBuildListDraftsURL_IncludesPageTokenWhenSet(t *testing.T) {
+	got := buildListDraftsURL("", 10, "next-page-abc123")
+	if !strings.Contains(got, "pageToken=next-page-abc123") {
+		t.Errorf("missing pageToken=next-page-abc123 in %q", got)
+	}
+}
+
+func TestBuildListDraftsURL_AllParamsCombined(t *testing.T) {
+	got := buildListDraftsURL("is:unread", 50, "tok")
+	for _, want := range []string{"maxResults=50", "q=is%3Aunread", "pageToken=tok"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
 // --- readMaxResults ---
 
 func TestReadMaxResults_MissingKeyReturnsDefault(t *testing.T) {
