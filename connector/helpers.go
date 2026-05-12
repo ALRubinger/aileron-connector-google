@@ -6,14 +6,19 @@
 
 package main
 
-import "strings"
+import (
+	"mime"
+	"strings"
+)
 
 // buildRFC2822 constructs a minimal RFC 2822 / RFC 5322 message that
 // Gmail's drafts.create accepts as the `raw` field. Gmail expects the
 // body to follow the same wire format an SMTP server would handle:
-// CRLF-terminated headers, blank line, body. Encoding is the caller's
-// concern — Gmail accepts UTF-8 in headers (Q-encoded for non-ASCII)
-// but plain ASCII bodies and subjects are the safe v0.0.1 path.
+// CRLF-terminated headers, blank line, body. The Subject header is
+// RFC 2047 encoded-word wrapped when it contains non-ASCII (raw 8-bit
+// bytes in headers get mis-decoded as Latin-1 by downstream agents,
+// producing mojibake on display); ASCII subjects pass through untouched.
+// The body carries its own charset via Content-Type and is left as-is.
 func buildRFC2822(to, cc, bcc, subject, body string) string {
 	var b strings.Builder
 	b.WriteString("To: ")
@@ -30,7 +35,7 @@ func buildRFC2822(to, cc, bcc, subject, body string) string {
 		b.WriteString("\r\n")
 	}
 	b.WriteString("Subject: ")
-	b.WriteString(subject)
+	b.WriteString(mime.QEncoding.Encode("utf-8", subject))
 	b.WriteString("\r\n")
 	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
 	b.WriteString("\r\n")
