@@ -34,6 +34,10 @@
 //	{"op": "send_draft", "args": {"draft_id": "r-12345"}}
 //	  → {"output": {"id": "...", "threadId": "...", "labelIds": [...]}}
 //
+//	{"op": "get_draft", "args": {"id": "r-12345"}}
+//	  → {"output": {"id": "...", "message": {"id": "...", "snippet": "...",
+//	      "payload": {"headers": [...]}, ...}}}
+//
 //	{"op": "create_calendar_event",
 //	 "args": {"title": "...", "start_time": "2026-05-04T15:00:00-07:00",
 //	          "end_time": "2026-05-04T16:00:00-07:00",
@@ -46,10 +50,11 @@
 // `credential: "oauth2"` so the runtime injects the bound bearer token
 // host-side. The connector never holds the OAuth token.
 //
-// Idempotency: the read ops (list_*) are idempotent by their HTTP
-// shape (GET). The write ops (draft_email, send_email, send_draft,
-// create_calendar_event) are NOT idempotent — repeating them creates
-// duplicate drafts/messages/events. Action manifests using these ops
+// Idempotency: the read ops (list_*, get_email, get_draft) are
+// idempotent by their HTTP shape (GET). The write ops (draft_email,
+// send_email, send_draft, create_calendar_event) are NOT idempotent —
+// repeating them creates duplicate drafts/messages/events. Action
+// manifests using these ops
 // MUST set [[execute]].idempotent = false so the gateway's retry layer
 // (ADR-0010) does not double-write. send_email and send_draft
 // additionally require per-call user approval at the action layer (see
@@ -149,6 +154,8 @@ func main() {
 		sendEmail(in.Args)
 	case "send_draft":
 		sendDraft(in.Args)
+	case "get_draft":
+		getDraft(in.Args)
 	case "create_calendar_event":
 		createCalendarEvent(in.Args)
 	default:
@@ -463,6 +470,57 @@ func sendDraft(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		writeError("connector_runtime_error", "send_draft: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// getDraft calls Gmail's users.drafts.get endpoint for a single draft
+// id with format=metadata.
+//
+//	GET https://gmail.googleapis.com/gmail/v1/users/me/drafts/{id}?format=metadata
+//
+// The response wraps a message: `{id, message: {id, threadId,
+// labelIds, snippet, payload: {headers: [...]}, ...}}`. `format=metadata`
+// returns headers (Subject, From, To, Date, etc.) and a ~200-char
+// snippet without fetching the full MIME body — the same cost/utility
+// trade-off as get_email.
+//
+// Primary use: feeding the send_draft approval prompt so the user sees
+// what they are about to dispatch (To / Subject / snippet) rather than
+// an opaque draft id. Idempotent and read-only — safe for the runtime
+// to call pre-approval.
+//
+// Args:
+//
+//	id  (string, required) — Gmail draft id, as returned by
+//	    `draft_email` in the response's `id` field.
+//
+// Output: the parsed users.drafts.get response. Subject/From/To live
+// at `message.payload.headers[]`; snippet at `message.snippet`.
+func getDraft(args map[string]any) {
+	id, _ := args["id"].(string)
+	if id == "" {
+		writeError("connector_runtime_error", "get_draft: id is required")
+		return
+	}
+	q := url.Values{}
+	q.Set("format", "metadata")
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/drafts/" +
+		url.PathEscape(id) + "?" + q.Encode()
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "get_draft: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("Gmail API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "get_draft: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)
