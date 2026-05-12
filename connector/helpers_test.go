@@ -1,6 +1,7 @@
 package main
 
 import (
+	"mime"
 	"reflect"
 	"strings"
 	"testing"
@@ -66,6 +67,49 @@ func TestBuildRFC2822_PreservesBodyExactly(t *testing.T) {
 	got := buildRFC2822("a@b.c", "", "", "S", body)
 	if !strings.HasSuffix(got, body) {
 		t.Errorf("body not preserved verbatim; got tail %q", got[len(got)-len(body):])
+	}
+}
+
+func TestBuildRFC2822_AsciiSubjectIsNotEncoded(t *testing.T) {
+	got := buildRFC2822("a@b.c", "", "", "Plain ASCII subject", "body")
+	if !strings.Contains(got, "Subject: Plain ASCII subject\r\n") {
+		t.Errorf("ASCII subject should appear unencoded; got:\n%s", got)
+	}
+	if strings.Contains(got, "=?") {
+		t.Errorf("ASCII subject should not be RFC 2047 encoded; got:\n%s", got)
+	}
+}
+
+func TestBuildRFC2822_NonAsciiSubjectIsRFC2047Encoded(t *testing.T) {
+	// Em dash (U+2014) in headers as raw UTF-8 gets mis-decoded as
+	// Latin-1 by downstream agents and renders as "Ã¢Â€Â"" mojibake.
+	// RFC 2047 encoded-word wrapping is the cure.
+	subject := "Aileron weekly recap — May 4 to May 11, 2026"
+	got := buildRFC2822("a@b.c", "", "", subject, "body")
+
+	start := strings.Index(got, "Subject: ")
+	if start < 0 {
+		t.Fatalf("no Subject header in:\n%s", got)
+	}
+	end := strings.Index(got[start:], "\r\n")
+	if end < 0 {
+		t.Fatalf("Subject header not CRLF-terminated in:\n%s", got)
+	}
+	value := got[start+len("Subject: ") : start+end]
+
+	if !strings.HasPrefix(strings.ToLower(value), "=?utf-8?q?") {
+		t.Errorf("Subject not RFC 2047 q-encoded; got %q", value)
+	}
+	if strings.Contains(value, "—") {
+		t.Errorf("Subject still contains raw non-ASCII; got %q", value)
+	}
+
+	decoded, err := new(mime.WordDecoder).DecodeHeader(value)
+	if err != nil {
+		t.Fatalf("decode header: %v", err)
+	}
+	if decoded != subject {
+		t.Errorf("round-trip mismatch:\n got  %q\n want %q", decoded, subject)
 	}
 }
 
