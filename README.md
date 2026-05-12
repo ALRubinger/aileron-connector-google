@@ -10,7 +10,7 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Six operations, three read + three write, across Gmail and Calendar:
+Seven operations, three read + four write, across Gmail and Calendar:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
@@ -19,6 +19,7 @@ Six operations, three read + three write, across Gmail and Calendar:
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `send-email` | `send_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/messages/send` |
+| `send-draft` | `send_draft` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts/send` |
 | `create-calendar-event` | `create_calendar_event` | POST | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
 
 `list-recent-emails` returns `{id, threadId}` pairs only — the cheapest
@@ -35,12 +36,14 @@ when the connector marks an outbound HTTP request with
 `credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
 docs).
 
-The three write ops are **not idempotent** — invoking them twice
-creates duplicate drafts/messages/events. Their action manifests
-declare `[[execute]].idempotent = false` so the gateway's retry layer
-(ADR-0010) does not double-write on transient failures.
+The four write ops are **not idempotent** — invoking them twice
+creates duplicate drafts/messages/events (or, for `send-draft`,
+sends once and then 404s because the draft is consumed). Their
+action manifests declare `[[execute]].idempotent = false` so the
+gateway's retry layer (ADR-0010) does not double-write on transient
+failures.
 
-The three write actions split on reversibility, and that drives
+The four write actions split on reversibility, and that drives
 which ones gate on Aileron's per-call approval mechanism (the runtime
 prompts the user via the launch-comms channel — CLI or the webapp
 `/approvals` surface — before invoking the connector; on denial
@@ -56,6 +59,11 @@ nothing reaches Google):
   approval step moves from Gmail's UI to Aileron's prompt; it does
   not disappear. Reach for this when skipping the manual Gmail click
   is worth the approval prompt.
+- **`send-draft` — gated.** Same risk profile as `send-email`: once
+  the draft is dispatched it is no longer recoverable. The fact that
+  the draft already existed in Gmail doesn't lower the irreversibility,
+  so the approval prompt stays. Pairs with `draft-email` for an
+  agent-drafts-then-user-approves-and-sends flow.
 - **`create-calendar-event` — gated.** Calendar's `events.insert`
   dispatches invitation emails to attendees as part of event
   creation, and those notifications don't retract cleanly when the

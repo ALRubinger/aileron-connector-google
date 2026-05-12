@@ -31,6 +31,9 @@
 //	 "args": {"to": "alice@example.com", "subject": "...", "body": "..."}}
 //	  → {"output": {"id": "...", "threadId": "...", "labelIds": [...]}}
 //
+//	{"op": "send_draft", "args": {"draft_id": "r-12345"}}
+//	  → {"output": {"id": "...", "threadId": "...", "labelIds": [...]}}
+//
 //	{"op": "create_calendar_event",
 //	 "args": {"title": "...", "start_time": "2026-05-04T15:00:00-07:00",
 //	          "end_time": "2026-05-04T16:00:00-07:00",
@@ -44,14 +47,14 @@
 // host-side. The connector never holds the OAuth token.
 //
 // Idempotency: the read ops (list_*) are idempotent by their HTTP
-// shape (GET). The write ops (draft_email, send_email,
+// shape (GET). The write ops (draft_email, send_email, send_draft,
 // create_calendar_event) are NOT idempotent — repeating them creates
 // duplicate drafts/messages/events. Action manifests using these ops
 // MUST set [[execute]].idempotent = false so the gateway's retry layer
-// (ADR-0010) does not double-write. send_email additionally requires
-// per-call user approval at the action layer (see
-// actions/send-email/action.md) since dispatched mail is not
-// recoverable the way a draft is.
+// (ADR-0010) does not double-write. send_email and send_draft
+// additionally require per-call user approval at the action layer (see
+// actions/send-email/action.md and actions/send-draft/action.md) since
+// dispatched mail is not recoverable the way a draft is.
 //
 //go:build wasip1
 
@@ -144,6 +147,8 @@ func main() {
 		draftEmail(in.Args)
 	case "send_email":
 		sendEmail(in.Args)
+	case "send_draft":
+		sendDraft(in.Args)
 	case "create_calendar_event":
 		createCalendarEvent(in.Args)
 	default:
@@ -404,6 +409,60 @@ func sendEmail(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		writeError("connector_runtime_error", "send_email: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// sendDraft dispatches an existing Gmail draft via users.drafts.send.
+//
+//	POST https://gmail.googleapis.com/gmail/v1/users/me/drafts/send
+//	Body: {"id": "<draftId>"}
+//
+// Unlike send_email this op takes no body — the draft already carries
+// its recipients, subject, and body in Gmail. Useful for the
+// draft-then-send flow where an agent (or the user) drafted earlier
+// and now wants to dispatch without reconstructing the RFC 2822
+// payload. Uses the same gmail.compose scope as draft_email; no scope
+// expansion.
+//
+// Args:
+//
+//	draft_id  (string, required) — Gmail draft id, as returned by
+//	          draft_email in the response (`id` field on the draft).
+//
+// Output: the sent message's API representation (id, threadId, labelIds).
+//
+// NOTE: NOT idempotent. The action manifest MUST declare
+// [[execute]].idempotent = false AND [approval].required = true — same
+// reasoning as send_email: dispatched mail is not recoverable, and the
+// runtime retry layer must not double-send on transient failure.
+func sendDraft(args map[string]any) {
+	draftID, _ := args["draft_id"].(string)
+	if draftID == "" {
+		writeError("connector_runtime_error", "send_draft: draft_id is required")
+		return
+	}
+
+	reqBody, err := json.Marshal(map[string]any{"id": draftID})
+	if err != nil {
+		writeError("connector_runtime_error", "send_draft: encode request: "+err.Error())
+		return
+	}
+
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/drafts/send"
+	respBody, status, err := doAuthenticatedJSON("POST", target, reqBody)
+	if err != nil {
+		writeError("connector_runtime_error", "send_draft: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("Gmail API returned %d: %s", status, string(respBody)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		writeError("connector_runtime_error", "send_draft: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)
