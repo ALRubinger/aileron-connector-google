@@ -8,5 +8,6 @@ actions = [
   "actions/draft-email",
   "actions/send-email",
   "actions/send-draft",
+  "actions/get-draft",
   "actions/create-calendar-event",
 ]
