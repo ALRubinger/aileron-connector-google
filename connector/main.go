@@ -38,6 +38,11 @@
 //	  → {"output": {"id": "...", "message": {"id": "...", "snippet": "...",
 //	      "payload": {"headers": [...]}, ...}}}
 //
+//	{"op": "list_drafts",
+//	 "args": {"query": "subject:invoice", "max_results": 25, "page_token": "..."}}
+//	  → {"output": {"drafts": [{"id": "...", "message": {"id": "...", "threadId": "..."}}],
+//	      "nextPageToken": "...", "resultSizeEstimate": 42}}
+//
 //	{"op": "create_calendar_event",
 //	 "args": {"title": "...", "start_time": "2026-05-04T15:00:00-07:00",
 //	          "end_time": "2026-05-04T16:00:00-07:00",
@@ -50,8 +55,8 @@
 // `credential: "oauth2"` so the runtime injects the bound bearer token
 // host-side. The connector never holds the OAuth token.
 //
-// Idempotency: the read ops (list_*, get_email, get_draft) are
-// idempotent by their HTTP shape (GET). The write ops (draft_email,
+// Idempotency: the read ops (list_*, get_email, get_draft, list_drafts)
+// are idempotent by their HTTP shape (GET). The write ops (draft_email,
 // send_email, send_draft, create_calendar_event) are NOT idempotent —
 // repeating them creates duplicate drafts/messages/events. Action
 // manifests using these ops
@@ -156,6 +161,8 @@ func main() {
 		sendDraft(in.Args)
 	case "get_draft":
 		getDraft(in.Args)
+	case "list_drafts":
+		listDrafts(in.Args)
 	case "create_calendar_event":
 		createCalendarEvent(in.Args)
 	default:
@@ -521,6 +528,53 @@ func getDraft(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		writeError("connector_runtime_error", "get_draft: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// listDrafts calls Gmail's users.drafts.list endpoint.
+//
+//	GET https://gmail.googleapis.com/gmail/v1/users/me/drafts?q={query}&maxResults={n}&pageToken={token}
+//
+// Output mirrors users.drafts.list: a list of `{id, message: {id, threadId}}`
+// pairs plus `nextPageToken` and `resultSizeEstimate`. Like list_recent_emails,
+// the response carries only ids — pair with get_draft to resolve headers and
+// snippets, then send_draft to dispatch. The two-call composition keeps the
+// surface predictable; an aggregated convenience action can be added later if
+// usage shows it is needed.
+//
+// Args:
+//
+//	query        (string, optional) — Gmail search query, e.g. "subject:invoice".
+//	                                  Passed through to the API's `q` parameter.
+//	max_results  (number, optional) — page size cap; default 10, capped at 100.
+//	page_token   (string, optional) — continuation token from a prior call's
+//	                                  `nextPageToken`.
+//
+// Idempotent by HTTP shape (GET); the action manifest sets
+// [[execute]].idempotent = true so the gateway's retry layer (ADR-0010) may
+// safely re-issue on transient failure. No approval gate — listing drafts is
+// strictly read-only and does not mutate Gmail state.
+func listDrafts(args map[string]any) {
+	query, _ := args["query"].(string)
+	maxResults := readMaxResults(args, 10)
+	pageToken, _ := args["page_token"].(string)
+
+	target := buildListDraftsURL(query, maxResults, pageToken)
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "list_drafts: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("Gmail API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "list_drafts: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)

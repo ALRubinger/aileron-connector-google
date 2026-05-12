@@ -8,6 +8,8 @@ package main
 
 import (
 	"mime"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -74,6 +76,25 @@ func normalizeAttendees(v any) []string {
 	default:
 		return nil
 	}
+}
+
+// buildListDraftsURL constructs the Gmail users.drafts.list endpoint
+// URL. Pulled out of listDrafts so the wire shape (param names,
+// omission of empty optionals) is exercisable without the host-import
+// HTTP path. Mirrors the inline pattern in listRecentEmails; the
+// helper exists here rather than there because list_drafts is the
+// first op that takes a continuation token, which is enough wire
+// surface to warrant a unit test.
+func buildListDraftsURL(query string, maxResults int, pageToken string) string {
+	q := url.Values{}
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	if query != "" {
+		q.Set("q", query)
+	}
+	if pageToken != "" {
+		q.Set("pageToken", pageToken)
+	}
+	return "https://gmail.googleapis.com/gmail/v1/users/me/drafts?" + q.Encode()
 }
 
 // readMaxResults extracts max_results from args. The JSON unmarshal
