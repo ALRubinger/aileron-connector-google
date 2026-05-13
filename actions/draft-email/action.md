@@ -43,30 +43,36 @@ name = "to"
 type = "string"
 description = "Comma-separated recipient email addresses, e.g. \"alice@example.com, bob@example.com\"."
 required = true
+label = "To"
 
 [[inputs]]
 name = "subject"
 type = "string"
 description = "Email subject line."
 required = true
+label = "Subject"
 
 [[inputs]]
 name = "body"
 type = "string"
 description = "Plain-text body of the email. The user will review and send the draft from Gmail; you are not sending it."
 required = true
+label = "Body"
+multiline = true
 
 [[inputs]]
 name = "cc"
 type = "string"
 description = "Optional comma-separated Cc addresses."
 required = false
+label = "Cc"
 
 [[inputs]]
 name = "bcc"
 type = "string"
 description = "Optional comma-separated Bcc addresses."
 required = false
+label = "Bcc"
 +++
 
 # Draft an Email
