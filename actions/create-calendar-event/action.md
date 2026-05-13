@@ -47,48 +47,57 @@ name = "title"
 type = "string"
 description = "Event title (the Calendar \"summary\" field). Keep it short — what the event is about."
 required = true
+label = "Title"
 
 [[inputs]]
 name = "start_time"
 type = "string"
 description = "Start time in RFC3339 format with timezone offset, e.g. \"2026-05-04T15:00:00-07:00\"."
 required = true
+label = "Start"
 
 [[inputs]]
 name = "end_time"
 type = "string"
 description = "End time in RFC3339 format. Must be after start_time."
 required = true
+label = "End"
 
 [[inputs]]
 name = "timezone"
 type = "string"
 description = "Optional IANA timezone, e.g. \"America/New_York\". When set, Calendar treats start_time and end_time as wall-clock times in this zone (handy for recurring events). Omit when start_time/end_time already carry an offset."
 required = false
+label = "Timezone"
 
 [[inputs]]
 name = "description"
 type = "string"
 description = "Optional long-form description (agenda, links, notes)."
 required = false
+label = "Description"
+multiline = true
 
 [[inputs]]
 name = "location"
 type = "string"
 description = "Optional physical address or virtual meeting URL."
 required = false
+label = "Location"
 
 [[inputs]]
 name = "attendees"
 type = "string"
 description = "Optional comma-separated list of attendee email addresses. Calendar sends invitations to these addresses on event creation."
 required = false
+label = "Attendees"
 
 [[inputs]]
 name = "calendar_id"
 type = "string"
 description = "Optional calendar ID. Defaults to \"primary\" — the user's main calendar."
 required = false
+label = "Calendar ID"
 +++
 
 # Create a Calendar Event
