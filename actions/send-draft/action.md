@@ -53,7 +53,12 @@ required = true
 [approval.preview]
 op = "get_draft"
 args = { id = "${args.draft_id}" }
-render = { To = "message.payload.headers.To", Subject = "message.payload.headers.Subject", Preview = "message.snippet" }
+multiline = ["Body"]
+
+[approval.preview.render]
+To      = "message.payload.headers.To"
+Subject = "message.payload.headers.Subject"
+Body    = "message.snippet"
 
 [[inputs]]
 name = "draft_id"
@@ -88,14 +93,16 @@ The approval prompt surfaces an **authoritative preview** fetched
 from Gmail at approval time — not from the agent. Before showing the
 prompt, the runtime invokes `get_draft` (an idempotent read-only op
 on the same connector) against the supplied `draft_id` and renders
-the draft's To, Subject, and snippet alongside the prompt. The
-preview output is shown only to the user; it is never returned to
-the agent's context. If the fetch fails (e.g., the agent passed a
-message id from `list_recent_emails` instead of a draft id and Gmail
-returns 404), the prompt renders "preview unavailable: `<reason>`"
-and the user can deny on the spot. See ADR-0016 (approval-time
-preview fetch) for the directive's contract, validation rules, and
-failure modes.
+the draft's To and Subject inline, with the Body shown as a
+scrollable blockquote (per ADR-0016's `multiline` directive) so the
+user can read the full message before approving. The preview output
+is shown only to the user; it is never returned to the agent's
+context. If the fetch fails (e.g., the agent passed a message id
+from `list_recent_emails` instead of a draft id and Gmail returns
+404), the prompt renders "preview unavailable: `<reason>`" and the
+user can deny on the spot. See ADR-0016 (approval-time preview
+fetch) for the directive's contract, validation rules, and failure
+modes.
 
 This action writes to your Gmail (sends a message). It is **not
 idempotent** — invoking it twice on the same draft id will send once
