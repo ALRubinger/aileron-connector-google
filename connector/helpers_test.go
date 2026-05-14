@@ -262,3 +262,100 @@ func TestReadMaxResults_UnsupportedTypeFallsBackToDefault(t *testing.T) {
 		}
 	}
 }
+
+// --- buildSearchContactsURL ---
+
+func TestBuildSearchContactsURL_BaseEndpoint(t *testing.T) {
+	got := buildSearchContactsURL("alice", "names", 10)
+	const prefix = "https://people.googleapis.com/v1/people:searchContacts?"
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("got %q, want prefix %q", got, prefix)
+	}
+}
+
+func TestBuildSearchContactsURL_EncodesQueryAndReadMask(t *testing.T) {
+	got := buildSearchContactsURL("alice smith", "names,emailAddresses,phoneNumbers", 10)
+	// url.Values encodes space as "+" and "," as "%2C".
+	if !strings.Contains(got, "query=alice+smith") {
+		t.Errorf("missing url-encoded query in %q", got)
+	}
+	if !strings.Contains(got, "readMask=names%2CemailAddresses%2CphoneNumbers") {
+		t.Errorf("missing url-encoded readMask in %q", got)
+	}
+}
+
+func TestBuildSearchContactsURL_SetsPageSize(t *testing.T) {
+	got := buildSearchContactsURL("a", "names", 15)
+	if !strings.Contains(got, "pageSize=15") {
+		t.Errorf("missing pageSize=15 in %q", got)
+	}
+}
+
+func TestBuildSearchContactsURL_ClampsAtAPICap(t *testing.T) {
+	// People API caps people:searchContacts.pageSize at 30; above
+	// that the call returns HTTP 400 with INVALID_ARGUMENT. The
+	// connector clamps to the cap so over-eager callers get results
+	// instead of an error.
+	got := buildSearchContactsURL("a", "names", 100)
+	if !strings.Contains(got, "pageSize=30") {
+		t.Errorf("page size should clamp to 30; got %q", got)
+	}
+}
+
+// --- buildListContactsURL ---
+
+func TestBuildListContactsURL_BaseEndpoint(t *testing.T) {
+	got := buildListContactsURL("names", 100, "", "")
+	const prefix = "https://people.googleapis.com/v1/people/me/connections?"
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("got %q, want prefix %q", got, prefix)
+	}
+}
+
+func TestBuildListContactsURL_AlwaysSetsPersonFieldsAndPageSize(t *testing.T) {
+	got := buildListContactsURL("names,emailAddresses", 50, "", "")
+	if !strings.Contains(got, "personFields=names%2CemailAddresses") {
+		t.Errorf("missing url-encoded personFields in %q", got)
+	}
+	if !strings.Contains(got, "pageSize=50") {
+		t.Errorf("missing pageSize=50 in %q", got)
+	}
+}
+
+func TestBuildListContactsURL_OmitsEmptyOptionals(t *testing.T) {
+	got := buildListContactsURL("names", 100, "", "")
+	if strings.Contains(got, "pageToken=") {
+		t.Errorf("empty page_token should be omitted; got %q", got)
+	}
+	if strings.Contains(got, "sortOrder=") {
+		t.Errorf("empty sort_order should be omitted; got %q", got)
+	}
+}
+
+func TestBuildListContactsURL_IncludesPageTokenWhenSet(t *testing.T) {
+	got := buildListContactsURL("names", 100, "next-tok-xyz", "")
+	if !strings.Contains(got, "pageToken=next-tok-xyz") {
+		t.Errorf("missing pageToken=next-tok-xyz in %q", got)
+	}
+}
+
+func TestBuildListContactsURL_IncludesSortOrderWhenSet(t *testing.T) {
+	got := buildListContactsURL("names", 100, "", "LAST_MODIFIED_DESCENDING")
+	if !strings.Contains(got, "sortOrder=LAST_MODIFIED_DESCENDING") {
+		t.Errorf("missing sortOrder in %q", got)
+	}
+}
+
+func TestBuildListContactsURL_AllParamsCombined(t *testing.T) {
+	got := buildListContactsURL("names,birthdays", 25, "tok", "FIRST_NAME_ASCENDING")
+	for _, want := range []string{
+		"personFields=names%2Cbirthdays",
+		"pageSize=25",
+		"pageToken=tok",
+		"sortOrder=FIRST_NAME_ASCENDING",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
