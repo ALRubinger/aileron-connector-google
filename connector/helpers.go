@@ -128,3 +128,58 @@ func readMaxResults(args map[string]any, def int) int {
 		return def
 	}
 }
+
+// searchContactsPageSizeCap is the People API's stated maximum for
+// `people:searchContacts.pageSize` (the API documents `Maximum: 30`
+// and returns HTTP 400 above it). The connector's readMaxResults caps
+// at 100 — fine for Gmail / Calendar list ops, too loose here — so
+// buildSearchContactsURL clamps a second time against this value.
+const searchContactsPageSizeCap = 30
+
+// buildSearchContactsURL constructs the People API people:searchContacts
+// endpoint URL. Pulled out of searchContacts so the wire shape
+// (param names, the People-API-specific pageSize cap) is exercisable
+// without the host-import HTTP path. Mirrors buildListDraftsURL.
+//
+//	GET https://people.googleapis.com/v1/people:searchContacts
+//	    ?query=...&readMask=...&pageSize=...
+//
+// readMask is required by the API — buildSearchContactsURL trusts the
+// caller (searchContacts) to have substituted a default before this
+// runs. pageSize is clamped to searchContactsPageSizeCap.
+func buildSearchContactsURL(query, readMask string, pageSize int) string {
+	if pageSize > searchContactsPageSizeCap {
+		pageSize = searchContactsPageSizeCap
+	}
+	q := url.Values{}
+	q.Set("query", query)
+	q.Set("readMask", readMask)
+	q.Set("pageSize", strconv.Itoa(pageSize))
+	return "https://people.googleapis.com/v1/people:searchContacts?" + q.Encode()
+}
+
+// buildListContactsURL constructs the People API people/me/connections
+// endpoint URL. Same extract-for-testability pattern as
+// buildListDraftsURL — list_contacts has the widest param surface of
+// the contacts ops (personFields, pageSize, pageToken, sortOrder),
+// which is enough to warrant a unit-testable helper.
+//
+//	GET https://people.googleapis.com/v1/people/me/connections
+//	    ?personFields=...&pageSize=...&pageToken=...&sortOrder=...
+//
+// personFields is required by the API; the caller substitutes a
+// default before this runs. pageToken and sortOrder are omitted from
+// the query string when empty so the URL stays minimal on the
+// first-page / unsorted call.
+func buildListContactsURL(personFields string, pageSize int, pageToken, sortOrder string) string {
+	q := url.Values{}
+	q.Set("personFields", personFields)
+	q.Set("pageSize", strconv.Itoa(pageSize))
+	if pageToken != "" {
+		q.Set("pageToken", pageToken)
+	}
+	if sortOrder != "" {
+		q.Set("sortOrder", sortOrder)
+	}
+	return "https://people.googleapis.com/v1/people/me/connections?" + q.Encode()
+}

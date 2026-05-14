@@ -49,17 +49,32 @@
 //	          "attendees": ["alice@example.com"]}}
 //	  → {"output": {"id": "...", "htmlLink": "..."}}
 //
+//	{"op": "search_contacts",
+//	 "args": {"query": "alice", "read_mask": "names,emailAddresses,phoneNumbers"}}
+//	  → {"output": {"results": [{"person": {"resourceName": "people/c123",
+//	      "names": [...], "emailAddresses": [...], ...}}]}}
+//
+//	{"op": "get_contact",
+//	 "args": {"resource_name": "people/c123", "person_fields": "names,birthdays"}}
+//	  → {"output": {"resourceName": "people/c123", "names": [...], ...}}
+//
+//	{"op": "list_contacts",
+//	 "args": {"max_results": 100, "page_token": "...",
+//	          "sort_order": "LAST_MODIFIED_DESCENDING"}}
+//	  → {"output": {"connections": [{"resourceName": "...", ...}],
+//	      "nextPageToken": "...", "totalPeople": 42}}
+//
 //	{"error": {"class": "...", "message": "..."}}  on failure
 //
 // All outbound HTTP is routed through `aileron_host.http_request` with
 // `credential: "oauth2"` so the runtime injects the bound bearer token
 // host-side. The connector never holds the OAuth token.
 //
-// Idempotency: the read ops (list_*, get_email, get_draft, list_drafts)
-// are idempotent by their HTTP shape (GET). The write ops (draft_email,
-// send_email, send_draft, create_calendar_event) are NOT idempotent —
-// repeating them creates duplicate drafts/messages/events. Action
-// manifests using these ops
+// Idempotency: the read ops (list_*, get_email, get_draft, list_drafts,
+// search_contacts, get_contact, list_contacts) are idempotent by their
+// HTTP shape (GET). The write ops (draft_email, send_email, send_draft,
+// create_calendar_event) are NOT idempotent — repeating them creates
+// duplicate drafts/messages/events. Action manifests using these ops
 // MUST set [[execute]].idempotent = false so the gateway's retry layer
 // (ADR-0010) does not double-write. send_email and send_draft
 // additionally require per-call user approval at the action layer (see
@@ -165,6 +180,12 @@ func main() {
 		listDrafts(in.Args)
 	case "create_calendar_event":
 		createCalendarEvent(in.Args)
+	case "search_contacts":
+		searchContacts(in.Args)
+	case "get_contact":
+		getContact(in.Args)
+	case "list_contacts":
+		listContacts(in.Args)
 	default:
 		writeError("connector_runtime_error", "unknown op: "+in.Op)
 		os.Exit(1)
@@ -660,6 +681,183 @@ func createCalendarEvent(args map[string]any) {
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		writeError("connector_runtime_error", "create_calendar_event: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// searchContacts calls the People API's people:searchContacts endpoint.
+//
+//	GET https://people.googleapis.com/v1/people:searchContacts
+//	    ?query={query}&readMask={fields}&pageSize={n}
+//
+// Args:
+//
+//	query        (string, required) — search string matched against
+//	             names, emails, phone numbers, organizations, and other
+//	             searchable fields on the user's contacts.
+//	read_mask    (string, optional) — comma-separated person fields to
+//	             return. Default: "names,emailAddresses,phoneNumbers,birthdays".
+//	             The API requires at least one field; the connector
+//	             substitutes the default before dispatching.
+//	max_results  (number, optional) — page size cap. Default 10; the
+//	             People API itself caps this op at 30 and the connector
+//	             clamps to that ceiling so over-eager callers get
+//	             results instead of an HTTP 400.
+//
+// Output: the raw `people:searchContacts` response. Results live at
+// `results[].person`; each person carries the fields named in readMask.
+//
+// People API quirk: Google recommends warming the search cache by
+// issuing an empty-query request first so freshly-modified contacts
+// appear. The connector intentionally skips that — the WASM sandbox
+// is stateless per invocation so a per-call warm-up would double the
+// quota cost of every search, and the dominant use case here is
+// reading existing contacts where the cache is already populated. If
+// a caller hits stale results, re-running the search after a moment
+// is the documented mitigation.
+func searchContacts(args map[string]any) {
+	query, _ := args["query"].(string)
+	if query == "" {
+		writeError("connector_runtime_error", "search_contacts: query is required")
+		return
+	}
+	readMask, _ := args["read_mask"].(string)
+	if readMask == "" {
+		readMask = "names,emailAddresses,phoneNumbers,birthdays"
+	}
+	pageSize := readMaxResults(args, 10)
+
+	target := buildSearchContactsURL(query, readMask, pageSize)
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "search_contacts: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("People API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "search_contacts: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// getContact calls the People API's people.get endpoint for a single
+// contact identified by its resource_name (e.g. "people/c123456789").
+//
+//	GET https://people.googleapis.com/v1/{resourceName}?personFields={fields}
+//
+// `resource_name` is the full Google-issued identifier as returned by
+// search_contacts / list_contacts (the `resourceName` field on each
+// person). It is intentionally NOT a bare numeric id — the People API
+// uses the full "people/<id>" form in its URLs and we pass it through
+// to avoid an asymmetric encode/decode step.
+//
+// Args:
+//
+//	resource_name (string, required) — must start with "people/" and
+//	              carry the Google-issued id; rejected otherwise. The
+//	              id portion is url.PathEscaped before substitution
+//	              into the URL so an attacker-controlled value cannot
+//	              inject query params or escape the path.
+//	person_fields (string, optional) — comma-separated fields to
+//	              return. Default: a wider set than search_contacts
+//	              ("names,emailAddresses,phoneNumbers,birthdays,addresses,
+//	              organizations,biographies,urls") because get_contact
+//	              is the "drill into one record" call where the cost of
+//	              extra fields is bounded to a single API hit.
+//
+// Output: the raw People API person response. Fields not requested in
+// person_fields are omitted by the API.
+func getContact(args map[string]any) {
+	resourceName, _ := args["resource_name"].(string)
+	const prefix = "people/"
+	if resourceName == "" || len(resourceName) <= len(prefix) || resourceName[:len(prefix)] != prefix {
+		writeError("connector_runtime_error", "get_contact: resource_name must be of the form \"people/<id>\"")
+		return
+	}
+	id := resourceName[len(prefix):]
+	personFields, _ := args["person_fields"].(string)
+	if personFields == "" {
+		personFields = "names,emailAddresses,phoneNumbers,birthdays,addresses,organizations,biographies,urls"
+	}
+
+	q := url.Values{}
+	q.Set("personFields", personFields)
+	target := "https://people.googleapis.com/v1/people/" + url.PathEscape(id) + "?" + q.Encode()
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "get_contact: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("People API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "get_contact: parse: "+err.Error())
+		return
+	}
+	writeOutput(parsed)
+}
+
+// listContacts calls the People API's people.connections.list endpoint
+// for the authenticated user.
+//
+//	GET https://people.googleapis.com/v1/people/me/connections
+//	    ?personFields={fields}&pageSize={n}&pageToken={t}&sortOrder={s}
+//
+// Args:
+//
+//	person_fields (string, optional) — comma-separated fields. Default:
+//	              "names,emailAddresses,phoneNumbers". Kept lean here
+//	              because list responses can carry hundreds of records;
+//	              callers can pair with get_contact to fetch a wider
+//	              field set per record.
+//	max_results   (number, optional) — page size; default 100. The
+//	              People API allows up to 1000 but the connector's
+//	              readMaxResults caps at 100 to keep quota usage
+//	              predictable; users who want more should paginate.
+//	page_token    (string, optional) — continuation token from a prior
+//	              call's `nextPageToken`. Pass to fetch the next page.
+//	sort_order    (string, optional) — one of LAST_MODIFIED_ASCENDING,
+//	              LAST_MODIFIED_DESCENDING, FIRST_NAME_ASCENDING,
+//	              LAST_NAME_ASCENDING. Unknown values surface as the
+//	              API's HTTP 400 rather than being pre-validated here
+//	              — same pass-through posture as Gmail's `q` parameter.
+//
+// Output: the raw `people/me/connections` response: `{connections: [...],
+// nextPageToken, totalPeople, totalItems}`.
+func listContacts(args map[string]any) {
+	personFields, _ := args["person_fields"].(string)
+	if personFields == "" {
+		personFields = "names,emailAddresses,phoneNumbers"
+	}
+	pageSize := readMaxResults(args, 100)
+	pageToken, _ := args["page_token"].(string)
+	sortOrder, _ := args["sort_order"].(string)
+
+	target := buildListContactsURL(personFields, pageSize, pageToken, sortOrder)
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		writeError("connector_runtime_error", "list_contacts: "+err.Error())
+		return
+	}
+	if status < 200 || status >= 300 {
+		writeError("external_api_error", fmt.Sprintf("People API returned %d: %s", status, string(body)))
+		return
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		writeError("connector_runtime_error", "list_contacts: parse: "+err.Error())
 		return
 	}
 	writeOutput(parsed)

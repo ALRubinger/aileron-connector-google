@@ -10,7 +10,8 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Nine operations, five read + four write, across Gmail and Calendar:
+Twelve operations, eight read + four write, across Gmail, Calendar,
+and Google Contacts:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
@@ -19,6 +20,9 @@ Nine operations, five read + four write, across Gmail and Calendar:
 | `list-drafts` | `list_drafts` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `get-draft` | `get_draft` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
+| `search-contacts` | `search_contacts` | GET | `people.googleapis.com/v1/people:searchContacts` |
+| `get-contact` | `get_contact` | GET | `people.googleapis.com/v1/{resourceName}` |
+| `list-contacts` | `list_contacts` | GET | `people.googleapis.com/v1/people/me/connections` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `send-email` | `send_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/messages/send` |
 | `send-draft` | `send_draft` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts/send` |
@@ -30,13 +34,13 @@ metadata (subject, from, snippet) for one or more results. Agent flows
 that summarize the inbox typically fan out parallel `get-email` calls
 after one `list-recent-emails`.
 
-All nine run inside the Aileron WASM sandbox with `[capabilities.network]`
-restricted to `gmail.googleapis.com:443` and `www.googleapis.com:443`.
-The connector never holds OAuth tokens — Aileron's runtime resolves the
-bound credential and injects `Authorization: Bearer <token>` host-side
-when the connector marks an outbound HTTP request with
-`credential: "oauth2"` (see ADR-0005 credential mediation in the Aileron
-docs).
+All twelve run inside the Aileron WASM sandbox with `[capabilities.network]`
+restricted to `gmail.googleapis.com:443`, `www.googleapis.com:443`, and
+`people.googleapis.com:443`. The connector never holds OAuth tokens —
+Aileron's runtime resolves the bound credential and injects
+`Authorization: Bearer <token>` host-side when the connector marks an
+outbound HTTP request with `credential: "oauth2"` (see ADR-0005
+credential mediation in the Aileron docs).
 
 The four write ops are **not idempotent** — invoking them twice
 creates duplicate drafts/messages/events (or, for `send-draft`,
@@ -120,9 +124,14 @@ aileron-connector-google/
 │   ├── list-recent-emails/action.md
 │   ├── get-email/action.md
 │   ├── list-drafts/action.md
+│   ├── get-draft/action.md
 │   ├── list-upcoming-events/action.md
+│   ├── search-contacts/action.md
+│   ├── get-contact/action.md
+│   ├── list-contacts/action.md
 │   ├── draft-email/action.md
 │   ├── send-email/action.md
+│   ├── send-draft/action.md
 │   └── create-calendar-event/action.md
 ├── keys/
 │   └── publisher.pub   # ed25519 public key — installed users add to
@@ -358,12 +367,13 @@ set:
 | Scope | Tier | Used by |
 |---|---|---|
 | `gmail.readonly` | Restricted | `list-recent-emails`, `get-email` |
-| `gmail.compose` | Restricted | `draft-email`, `send-email` |
+| `gmail.compose` | Restricted | `draft-email`, `send-email`, `send-draft`, `get-draft`, `list-drafts` |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
+| `contacts.readonly` | Sensitive | `search-contacts`, `get-contact`, `list-contacts` |
 
 Submit the full scope list at once when registering the OAuth app, so
-all four go through verification together. Restricted scopes also
+all five go through verification together. Restricted scopes also
 require an annual CASA security re-review once verified — front-loading
 the eventual scope list at registration is the cheapest path.
 
