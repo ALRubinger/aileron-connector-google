@@ -7,7 +7,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"mime"
+	"mime/multipart"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -182,4 +187,181 @@ func buildListContactsURL(personFields string, pageSize int, pageToken, sortOrde
 		q.Set("sortOrder", sortOrder)
 	}
 	return "https://people.googleapis.com/v1/people/me/connections?" + q.Encode()
+}
+
+// driveFilesDefaultFields is the field set returned by search_files when
+// the caller does not pass `fields` explicitly. Kept lean — id, name,
+// mimeType, modifiedTime, parents, webViewLink — to keep response size
+// bounded for large result pages. Callers that need owners, sharing
+// info, or capabilities can override.
+const driveFilesDefaultFields = "files(id,name,mimeType,modifiedTime,parents,webViewLink),nextPageToken"
+
+// buildSearchFilesURL constructs the Drive v3 files.list endpoint URL.
+// Pulled out of searchFiles so the wire shape (param names, omission of
+// empty optionals, default field mask) is exercisable without the
+// host-import HTTP path. Mirrors the buildListDraftsURL / buildList
+// ContactsURL pattern.
+//
+//	GET https://www.googleapis.com/drive/v3/files
+//	    ?q=...&pageSize=...&fields=...&orderBy=...&pageToken=...
+//
+// `fields` is required for predictable response size — Drive's default
+// response omits useful fields like modifiedTime and parents, so we
+// pass an explicit mask. Callers may override but cannot omit.
+func buildSearchFilesURL(query, fields, orderBy, pageToken string, pageSize int) string {
+	if fields == "" {
+		fields = driveFilesDefaultFields
+	}
+	q := url.Values{}
+	q.Set("pageSize", strconv.Itoa(pageSize))
+	q.Set("fields", fields)
+	if query != "" {
+		q.Set("q", query)
+	}
+	if orderBy != "" {
+		q.Set("orderBy", orderBy)
+	}
+	if pageToken != "" {
+		q.Set("pageToken", pageToken)
+	}
+	return "https://www.googleapis.com/drive/v3/files?" + q.Encode()
+}
+
+// isGoogleNativeMIME reports whether a Drive mimeType is one of
+// Google's editor formats (Docs / Sheets / Slides / Drawings / Forms /
+// etc.). Native files have no downloadable byte stream; reading their
+// content goes through the export endpoint with a target mimeType,
+// while non-native files are streamed via alt=media.
+func isGoogleNativeMIME(driveMIME string) bool {
+	return strings.HasPrefix(driveMIME, "application/vnd.google-apps.")
+}
+
+// defaultExportMIME maps a Google native Drive mimeType to the
+// connector's default text export type. Returns "" for native types
+// that have no sensible text export (e.g. Drawings, Forms) so the
+// caller can error out with a clear message instead of dispatching
+// against an export the agent cannot consume.
+//
+// The defaults favor text over rich formats because the dominant
+// consumer is an LLM agent reading content for context — text/plain
+// for Docs/Slides and text/csv for Sheets are the cheapest faithful
+// representations. Callers that need PDF or DOCX may override via the
+// `export_mime_type` arg on get_file_content.
+func defaultExportMIME(driveMIME string) string {
+	switch driveMIME {
+	case "application/vnd.google-apps.document":
+		return "text/plain"
+	case "application/vnd.google-apps.spreadsheet":
+		return "text/csv"
+	case "application/vnd.google-apps.presentation":
+		return "text/plain"
+	default:
+		return ""
+	}
+}
+
+// buildMultipartUpload assembles a multipart/related body for Drive's
+// uploadType=multipart endpoint: a JSON metadata part followed by the
+// file content part. Returns the body bytes and the full Content-Type
+// header value (including the generated boundary) the caller should
+// set on the outbound request.
+//
+// v1 scope: the content is treated as UTF-8 text — JSON encoding of
+// the host-ABI request body coerces arbitrary bytes to valid UTF-8 by
+// replacing invalid sequences with the Unicode replacement character,
+// so binary uploads (PDFs, images) would silently corrupt. Restricting
+// upload_file to text content is the explicit v1 trade-off; binary
+// support is a follow-up that needs a host-ABI binary-body field.
+//
+// mime/multipart.Writer is used for boundary generation; the outer
+// Content-Type is set to multipart/related (not the package default
+// multipart/form-data) because Drive's upload endpoint expects the
+// related variant per its documented contract.
+func buildMultipartUpload(metadata map[string]any, contentMIME string, content []byte) ([]byte, string, error) {
+	metaJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal metadata: %w", err)
+	}
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+
+	metaHdr := textproto.MIMEHeader{}
+	metaHdr.Set("Content-Type", "application/json; charset=UTF-8")
+	metaPart, err := w.CreatePart(metaHdr)
+	if err != nil {
+		return nil, "", fmt.Errorf("create metadata part: %w", err)
+	}
+	if _, err := metaPart.Write(metaJSON); err != nil {
+		return nil, "", fmt.Errorf("write metadata part: %w", err)
+	}
+
+	contHdr := textproto.MIMEHeader{}
+	contHdr.Set("Content-Type", contentMIME)
+	contPart, err := w.CreatePart(contHdr)
+	if err != nil {
+		return nil, "", fmt.Errorf("create content part: %w", err)
+	}
+	if _, err := contPart.Write(content); err != nil {
+		return nil, "", fmt.Errorf("write content part: %w", err)
+	}
+
+	if err := w.Close(); err != nil {
+		return nil, "", fmt.Errorf("close multipart writer: %w", err)
+	}
+	return buf.Bytes(), "multipart/related; boundary=" + w.Boundary(), nil
+}
+
+// isTextLikeMIME reports whether a non-native Drive mimeType is safe
+// to round-trip through the host-ABI's JSON-string body field. The
+// stdin/stdout ABI encodes strings as JSON, which coerces arbitrary
+// bytes to valid UTF-8 (replacing invalid sequences with U+FFFD), so
+// binary downloads would silently corrupt. v1 restricts get_file_content
+// to text-shaped mimeTypes; binary support is a follow-up that needs
+// a host-ABI binary-body field.
+func isTextLikeMIME(m string) bool {
+	if strings.HasPrefix(m, "text/") {
+		return true
+	}
+	switch m {
+	case "application/json",
+		"application/xml",
+		"application/javascript",
+		"application/yaml",
+		"application/x-yaml",
+		"application/toml",
+		"application/x-toml":
+		return true
+	}
+	return false
+}
+
+// driveParentsList normalizes a parent-folder argument into a
+// comma-separated list of folder ids. Accepts either a comma-separated
+// string ("folder1,folder2") or a JSON array of strings, mirroring
+// normalizeAttendees' shape. Returns "" for nil / empty / unsupported
+// types so the caller can omit the field cleanly.
+func driveParentsList(v any) string {
+	switch in := v.(type) {
+	case string:
+		parts := strings.Split(in, ",")
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				out = append(out, t)
+			}
+		}
+		return strings.Join(out, ",")
+	case []any:
+		out := make([]string, 0, len(in))
+		for _, x := range in {
+			if s, ok := x.(string); ok {
+				if t := strings.TrimSpace(s); t != "" {
+					out = append(out, t)
+				}
+			}
+		}
+		return strings.Join(out, ",")
+	default:
+		return ""
+	}
 }

@@ -1,5 +1,5 @@
-name = "gmail-and-google-calendar"
-description = "Read and draft Gmail; read and create calendar events; read Google Contacts; send mail (incl. existing drafts) and create events with per-call approval."
+name = "gmail-google-calendar-and-drive"
+description = "Read and draft Gmail; read and create calendar events; read Google Contacts; search, read, author, and edit Google Drive files and Docs; send mail (incl. existing drafts), create events, and move Drive files with per-call approval."
 
 actions = [
   "actions/list-recent-emails",
@@ -14,4 +14,13 @@ actions = [
   "actions/search-contacts",
   "actions/get-contact",
   "actions/list-contacts",
+  "actions/search-files",
+  "actions/get-file-content",
+  "actions/get-doc-structure",
+  "actions/get-file-metadata",
+  "actions/create-doc",
+  "actions/upload-file",
+  "actions/update-doc",
+  "actions/rename-file",
+  "actions/move-file",
 ]

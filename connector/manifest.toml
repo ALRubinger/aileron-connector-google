@@ -24,6 +24,7 @@ hosts = [
   "gmail.googleapis.com:443",
   "www.googleapis.com:443",
   "people.googleapis.com:443",
+  "docs.googleapis.com:443",
 ]
 
 # Credential capability — the kind of credential the runtime resolves and
@@ -33,7 +34,7 @@ hosts = [
 # `credential: "oauth2"`.
 [capabilities.credential]
 kind = "oauth2"
-scope = "Read your Gmail messages, Calendar events, and Google Contacts; create drafts and calendar events"
+scope = "Read your Gmail messages, Calendar events, Google Contacts, and Google Drive files; create drafts, calendar events, and Google Docs; edit Docs and Drive files"
 
 # OAuth provider config — the runtime drives the OAuth dance using these
 # endpoints when the user runs `aileron binding setup`. Per ADR-0006 we
@@ -73,9 +74,16 @@ token_url     = "https://oauth2.googleapis.com/token"
 client_id     = "298373247853-i63n2n3ghapvbsjn3ocb2jr6u9vkcmih.apps.googleusercontent.com"
 client_secret = "bound-at-release"
 scopes = [
-  # Restricted tier (Gmail).
+  # Restricted tier (Gmail, Drive, Docs). All three live in the
+  # restricted tier (CASA annual review) per Google's published
+  # OAuth scope policy. Front-loading the Drive + Docs scopes now
+  # is no costlier than adding them later — verification cost is
+  # per-tier, not per-scope, and we are already restricted-tier
+  # for Gmail.
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
+  "https://www.googleapis.com/auth/drive",
+  "https://www.googleapis.com/auth/documents",
   # Sensitive tier (Calendar + People).
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/calendar.events",
