@@ -1,6 +1,6 @@
 # aileron-connector-google
 
-Aileron connector for Google APIs — Gmail + Calendar read/write.
+Aileron connector for Google APIs — Gmail, Calendar, Contacts, and Google Drive + Docs read/write.
 
 This repo is the first reference connector for the Aileron action runtime
 (see [github.com/ALRubinger/aileron](https://github.com/ALRubinger/aileron)).
@@ -10,8 +10,8 @@ templates with declared inputs, ed25519-signed release tarballs.
 
 ## What it ships
 
-Twelve operations, eight read + four write, across Gmail, Calendar,
-and Google Contacts:
+Twenty-one operations, twelve read + nine write, across Gmail,
+Calendar, Google Contacts, Google Drive, and Google Docs:
 
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
@@ -23,10 +23,19 @@ and Google Contacts:
 | `search-contacts` | `search_contacts` | GET | `people.googleapis.com/v1/people:searchContacts` |
 | `get-contact` | `get_contact` | GET | `people.googleapis.com/v1/{resourceName}` |
 | `list-contacts` | `list_contacts` | GET | `people.googleapis.com/v1/people/me/connections` |
+| `search-files` | `search_files` | GET | `www.googleapis.com/drive/v3/files` |
+| `get-file-content` | `get_file_content` | GET | `www.googleapis.com/drive/v3/files/{id}` (export or `alt=media`) |
+| `get-file-metadata` | `get_file_metadata` | GET | `www.googleapis.com/drive/v3/files/{id}` |
+| `get-doc-structure` | `get_doc_structure` | GET | `docs.googleapis.com/v1/documents/{documentId}` |
 | `draft-email` | `draft_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `send-email` | `send_email` | POST | `gmail.googleapis.com/gmail/v1/users/me/messages/send` |
 | `send-draft` | `send_draft` | POST | `gmail.googleapis.com/gmail/v1/users/me/drafts/send` |
 | `create-calendar-event` | `create_calendar_event` | POST | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |
+| `create-doc` | `create_doc` | POST | `docs.googleapis.com/v1/documents` (+ `documents/{id}:batchUpdate` for initial body) |
+| `upload-file` | `upload_file` | POST | `www.googleapis.com/upload/drive/v3/files?uploadType=multipart` |
+| `update-doc` | `update_doc` | POST | `docs.googleapis.com/v1/documents/{documentId}:batchUpdate` |
+| `rename-file` | `rename_file` | PATCH | `www.googleapis.com/drive/v3/files/{id}` |
+| `move-file` | `move_file` | PATCH | `www.googleapis.com/drive/v3/files/{id}?addParents=&removeParents=` |
 
 `list-recent-emails` returns `{id, threadId}` pairs only — the cheapest
 shape for the Gmail API. Pair it with `get-email` to drill into
@@ -34,61 +43,56 @@ metadata (subject, from, snippet) for one or more results. Agent flows
 that summarize the inbox typically fan out parallel `get-email` calls
 after one `list-recent-emails`.
 
-All twelve run inside the Aileron WASM sandbox with `[capabilities.network]`
-restricted to `gmail.googleapis.com:443`, `www.googleapis.com:443`, and
-`people.googleapis.com:443`. The connector never holds OAuth tokens —
+All twenty-one run inside the Aileron WASM sandbox with
+`[capabilities.network]` restricted to `gmail.googleapis.com:443`,
+`www.googleapis.com:443`, `people.googleapis.com:443`, and
+`docs.googleapis.com:443`. The connector never holds OAuth tokens —
 Aileron's runtime resolves the bound credential and injects
 `Authorization: Bearer <token>` host-side when the connector marks an
 outbound HTTP request with `credential: "oauth2"` (see ADR-0005
 credential mediation in the Aileron docs).
 
-The four write ops are **not idempotent** — invoking them twice
-creates duplicate drafts/messages/events (or, for `send-draft`,
-sends once and then 404s because the draft is consumed). Their
-action manifests declare `[[execute]].idempotent = false` so the
-gateway's retry layer (ADR-0010) does not double-write on transient
-failures.
+Write idempotency splits two ways:
 
-The four write actions split on reversibility, and that drives
-which ones gate on Aileron's per-call approval mechanism (the runtime
-prompts the user via the launch-comms channel — CLI or the webapp
-`/approvals` surface — before invoking the connector; on denial
-nothing reaches Google):
+- **Not idempotent** (creates / sends / structured edits): `draft_email`,
+  `send_email`, `send_draft`, `create_calendar_event`, `create_doc`,
+  `upload_file`, `update_doc`. Repeating these creates duplicate
+  drafts/messages/events/docs/files, or applies the same edit twice.
+  Their action manifests declare `[[execute]].idempotent = false` so
+  the gateway's retry layer (ADR-0010) does not double-write on
+  transient failures.
+- **Idempotent in effect** (target-state writes): `rename_file`,
+  `move_file`. Re-issuing with the same arguments leaves Drive in the
+  same state. Their manifests declare `idempotent = true` so the
+  retry layer may safely re-issue between the approval grant and the
+  API call.
 
-- **`draft-email` — un-gated.** Drafts land in Gmail's Drafts folder
-  and are fully reversible. The user already has a built-in
-  human-in-the-loop step (clicking Send in Gmail), so a runtime
-  prompt would duplicate that review without adding safety. Reach
-  for this for unattended flows where the cost of a stale draft is
-  near zero.
-- **`send-email` — gated.** Dispatched mail is not reversible. The
-  approval step moves from Gmail's UI to Aileron's prompt; it does
-  not disappear. Reach for this when skipping the manual Gmail click
-  is worth the approval prompt.
-- **`send-draft` — gated.** Same risk profile as `send-email`: once
-  the draft is dispatched it is no longer recoverable. The fact that
-  the draft already existed in Gmail doesn't lower the irreversibility,
-  so the approval prompt stays. Pairs with `draft-email` for an
-  agent-drafts-then-user-approves-and-sends flow. Unlike `send-email`,
-  whose `to` / `subject` / `body` inputs are sufficient for the
-  approval prompt to render, `send-draft` takes a single opaque
-  `draft_id`. The manifest declares an `[approval.preview]` block
-  (ADR-0016) pointing at `get_draft`; the runtime fetches the draft
-  from Gmail at approval time and renders authoritative To / Subject /
-  snippet in the prompt. That is why this connector also ships the
-  read-only `get-draft` action — it is the preview op send-draft's
-  approval relies on, and is independently useful for chat-time
-  draft inspection.
-- **`create-calendar-event` — gated.** Calendar's `events.insert`
-  dispatches invitation emails to attendees as part of event
-  creation, and those notifications don't retract cleanly when the
-  event is later deleted. That irreversibility makes a calendar
-  insert closer to a send than to a draft.
+Approval gating is per-action and reflects reversibility plus
+third-party observability (the runtime prompts the user via the
+launch-comms channel — CLI or the webapp `/approvals` surface —
+before invoking the connector; on denial nothing reaches Google):
 
-The gating posture is per-action and recorded in each action.md's
-`[approval]` block (or the comment explaining its absence). Future
-write actions inherit nothing — each one's gating is its own
-judgment call.
+| Action | Gated? | Why |
+|---|---|---|
+| `draft-email` | no | Drafts are reversible; Gmail's Send UI is the human-in-the-loop. |
+| `send-email` | **yes** | Dispatched mail is irreversible. |
+| `send-draft` | **yes** | Same as send-email; preview op = `get_draft`. |
+| `create-calendar-event` | **yes** | `events.insert` dispatches attendee invites that don't retract cleanly. |
+| `create-doc` | no | Reversible via Drive trash; doc is private to creator. |
+| `upload-file` | no | Reversible via Drive trash; file is private to creator. |
+| `update-doc` | no | Reversible via Docs revision history (owner can roll back). |
+| `rename-file` | no | Reversible by renaming back; no third-party side effect. |
+| `move-file` | **yes** | Changes folder-inherited permissions — third-party-observable to collaborators in source/destination folders, the same kind of side effect that gates `send-email`. Preview op = `get_file_metadata`. |
+
+The decision matrix the Drive writes follow: **reversibility + private
+side effects → no gate; irreversibility or third-party-observable
+side effects → gate.** Docs revision history is the safety net for
+`update-doc`; Drive's permission-inheritance side effect is the
+reason `move-file` is the one Drive write that gates.
+
+The gating posture is recorded in each action.md's `[approval]`
+block (or the comment explaining its absence). Future write actions
+inherit nothing — each one's gating is its own judgment call.
 
 ## Demo path
 
@@ -368,6 +372,8 @@ set:
 |---|---|---|
 | `gmail.readonly` | Restricted | `list-recent-emails`, `get-email` |
 | `gmail.compose` | Restricted | `draft-email`, `send-email`, `send-draft`, `get-draft`, `list-drafts` |
+| `drive` | Restricted | `search-files`, `get-file-content`, `get-file-metadata`, `upload-file`, `rename-file`, `move-file` |
+| `documents` | Restricted | `get-doc-structure`, `create-doc`, `update-doc` |
 | `calendar.readonly` | Sensitive | `list-upcoming-events` |
 | `calendar.events` | Sensitive | `create-calendar-event` |
 | `contacts.readonly` | Sensitive | `search-contacts`, `get-contact`, `list-contacts` |

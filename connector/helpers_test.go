@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"mime"
+	"mime/multipart"
 	"reflect"
 	"strings"
 	"testing"
@@ -356,6 +359,259 @@ func TestBuildListContactsURL_AllParamsCombined(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+// --- buildSearchFilesURL ---
+
+func TestBuildSearchFilesURL_BaseEndpoint(t *testing.T) {
+	got := buildSearchFilesURL("", "", "", "", 25)
+	const prefix = "https://www.googleapis.com/drive/v3/files?"
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("got %q, want prefix %q", got, prefix)
+	}
+}
+
+func TestBuildSearchFilesURL_AlwaysSetsPageSizeAndFields(t *testing.T) {
+	got := buildSearchFilesURL("", "", "", "", 25)
+	if !strings.Contains(got, "pageSize=25") {
+		t.Errorf("missing pageSize=25 in %q", got)
+	}
+	if !strings.Contains(got, "fields=") {
+		t.Errorf("fields should always be set; got %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_OmitsEmptyOptionals(t *testing.T) {
+	got := buildSearchFilesURL("", "", "", "", 25)
+	if strings.Contains(got, "q=") {
+		t.Errorf("empty query should be omitted; got %q", got)
+	}
+	if strings.Contains(got, "orderBy=") {
+		t.Errorf("empty order_by should be omitted; got %q", got)
+	}
+	if strings.Contains(got, "pageToken=") {
+		t.Errorf("empty page_token should be omitted; got %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_IncludesQueryWhenSet(t *testing.T) {
+	got := buildSearchFilesURL("name contains 'budget'", "", "", "", 25)
+	// url.Values encodes space as "+" and "'" as "%27".
+	if !strings.Contains(got, "q=name+contains+%27budget%27") {
+		t.Errorf("missing url-encoded q in %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_CallerCanOverrideFields(t *testing.T) {
+	got := buildSearchFilesURL("", "files(id,name,owners)", "", "", 25)
+	if !strings.Contains(got, "fields=files%28id%2Cname%2Cowners%29") {
+		t.Errorf("missing caller-supplied fields in %q", got)
+	}
+	if strings.Contains(got, "modifiedTime") {
+		t.Errorf("default fields leaked when caller overrode; got %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_IncludesOrderByWhenSet(t *testing.T) {
+	got := buildSearchFilesURL("", "", "modifiedTime desc", "", 25)
+	if !strings.Contains(got, "orderBy=modifiedTime+desc") {
+		t.Errorf("missing orderBy in %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_IncludesPageTokenWhenSet(t *testing.T) {
+	got := buildSearchFilesURL("", "", "", "tok-xyz", 25)
+	if !strings.Contains(got, "pageToken=tok-xyz") {
+		t.Errorf("missing pageToken in %q", got)
+	}
+}
+
+func TestBuildSearchFilesURL_AllParamsCombined(t *testing.T) {
+	got := buildSearchFilesURL("trashed=false", "files(id,name)", "modifiedTime desc", "tok", 50)
+	for _, want := range []string{
+		"pageSize=50",
+		"fields=files%28id%2Cname%29",
+		"q=trashed%3Dfalse",
+		"orderBy=modifiedTime+desc",
+		"pageToken=tok",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+// --- isGoogleNativeMIME / defaultExportMIME ---
+
+func TestIsGoogleNativeMIME(t *testing.T) {
+	cases := map[string]bool{
+		"application/vnd.google-apps.document":     true,
+		"application/vnd.google-apps.spreadsheet":  true,
+		"application/vnd.google-apps.presentation": true,
+		"application/vnd.google-apps.folder":       true,
+		"application/pdf":                          false,
+		"text/plain":                               false,
+		"image/png":                                false,
+		"":                                         false,
+	}
+	for in, want := range cases {
+		if got := isGoogleNativeMIME(in); got != want {
+			t.Errorf("isGoogleNativeMIME(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestDefaultExportMIME(t *testing.T) {
+	cases := map[string]string{
+		"application/vnd.google-apps.document":     "text/plain",
+		"application/vnd.google-apps.spreadsheet":  "text/csv",
+		"application/vnd.google-apps.presentation": "text/plain",
+		// Drawings, Forms, Folders have no sensible text export — return ""
+		// so the caller surfaces a clear error instead of dispatching a 400.
+		"application/vnd.google-apps.drawing": "",
+		"application/vnd.google-apps.form":    "",
+		"application/vnd.google-apps.folder":  "",
+		"application/pdf":                     "",
+		"":                                    "",
+	}
+	for in, want := range cases {
+		if got := defaultExportMIME(in); got != want {
+			t.Errorf("defaultExportMIME(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// --- buildMultipartUpload ---
+
+func TestBuildMultipartUpload_ContentTypeAdvertisesRelated(t *testing.T) {
+	_, ct, err := buildMultipartUpload(
+		map[string]any{"name": "f.txt"},
+		"text/plain",
+		[]byte("hi"),
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasPrefix(ct, "multipart/related; boundary=") {
+		t.Errorf("content-type should be multipart/related; got %q", ct)
+	}
+}
+
+func TestBuildMultipartUpload_BodyContainsMetadataAndContent(t *testing.T) {
+	metadata := map[string]any{
+		"name":     "notes.md",
+		"mimeType": "text/markdown",
+	}
+	body, ct, err := buildMultipartUpload(metadata, "text/markdown", []byte("# Hello\n"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const boundaryParam = "boundary="
+	idx := strings.Index(ct, boundaryParam)
+	if idx < 0 {
+		t.Fatalf("no boundary in content-type %q", ct)
+	}
+	boundary := ct[idx+len(boundaryParam):]
+	sep := "--" + boundary
+
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, sep) {
+		t.Errorf("body missing boundary separator %q; body=\n%s", sep, bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Content-Type: application/json; charset=UTF-8") {
+		t.Errorf("body missing metadata part Content-Type; body=\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "Content-Type: text/markdown") {
+		t.Errorf("body missing content part Content-Type; body=\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `"name":"notes.md"`) {
+		t.Errorf("body missing metadata json; body=\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "# Hello\n") {
+		t.Errorf("body missing content; body=\n%s", bodyStr)
+	}
+}
+
+func TestBuildMultipartUpload_RoundTripsViaStdlibReader(t *testing.T) {
+	// Independent verification that the body we build is parseable by
+	// the standard library's multipart reader — i.e. boundary, part
+	// headers, and CRLF separators are wire-correct. If this breaks,
+	// Drive's parser will reject the upload too.
+	metadata := map[string]any{"name": "x.txt"}
+	body, ct, err := buildMultipartUpload(metadata, "text/plain", []byte("payload"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		t.Fatalf("parse content-type %q: %v", ct, err)
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	parts := 0
+	for {
+		p, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read part: %v", err)
+		}
+		buf := new(bytes.Buffer)
+		if _, err := buf.ReadFrom(p); err != nil {
+			t.Fatalf("buffer part: %v", err)
+		}
+		parts++
+		switch parts {
+		case 1:
+			if got := p.Header.Get("Content-Type"); got != "application/json; charset=UTF-8" {
+				t.Errorf("part 1 content-type = %q", got)
+			}
+			if !strings.Contains(buf.String(), `"name":"x.txt"`) {
+				t.Errorf("part 1 body = %q", buf.String())
+			}
+		case 2:
+			if got := p.Header.Get("Content-Type"); got != "text/plain" {
+				t.Errorf("part 2 content-type = %q", got)
+			}
+			if buf.String() != "payload" {
+				t.Errorf("part 2 body = %q, want %q", buf.String(), "payload")
+			}
+		}
+	}
+	if parts != 2 {
+		t.Errorf("expected 2 parts, got %d", parts)
+	}
+}
+
+// --- driveParentsList ---
+
+func TestDriveParentsList_StringFormSplitsAndTrims(t *testing.T) {
+	got := driveParentsList("folder1, folder2,folder3")
+	if got != "folder1,folder2,folder3" {
+		t.Errorf("got %q, want %q", got, "folder1,folder2,folder3")
+	}
+}
+
+func TestDriveParentsList_ArrayForm(t *testing.T) {
+	got := driveParentsList([]any{"folder1", " folder2 ", "folder3"})
+	if got != "folder1,folder2,folder3" {
+		t.Errorf("got %q, want %q", got, "folder1,folder2,folder3")
+	}
+}
+
+func TestDriveParentsList_DropsEmptiesAndNonStrings(t *testing.T) {
+	got := driveParentsList([]any{"a", "", 42, "  ", "b"})
+	if got != "a,b" {
+		t.Errorf("got %q, want %q", got, "a,b")
+	}
+}
+
+func TestDriveParentsList_NilAndUnsupportedReturnEmpty(t *testing.T) {
+	for _, in := range []any{nil, 42, 3.14, map[string]any{}, true} {
+		if got := driveParentsList(in); got != "" {
+			t.Errorf("input %#v: got %q, want empty", in, got)
 		}
 	}
 }
