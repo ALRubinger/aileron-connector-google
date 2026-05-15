@@ -47,6 +47,7 @@ required = true
 [[inputs]]
 name = "requests"
 type = "array"
+items_type = "object"
 description = "Array of Docs API Request objects to apply in order. Common request types: {\"insertText\": {\"text\": \"...\", \"location\": {\"index\": N}}}, {\"replaceAllText\": {\"containsText\": {\"text\": \"OLD\", \"matchCase\": true}, \"replaceText\": \"NEW\"}}, {\"deleteContentRange\": {\"range\": {\"startIndex\": A, \"endIndex\": B}}}, {\"updateTextStyle\": {...}}, {\"updateParagraphStyle\": {...}}, {\"insertTable\": {...}}. See the Docs API reference for the full Request union. Pair with `get-doc-structure` to obtain accurate indices before constructing range-based requests."
 required = true
 +++
