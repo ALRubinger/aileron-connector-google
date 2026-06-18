@@ -73,6 +73,13 @@ type = "string"
 description = "Optional comma-separated Bcc addresses."
 required = false
 label = "Bcc"
+
+[[inputs]]
+name = "in_reply_to_message_id"
+type = "string"
+description = "Optional. The Gmail message id you are replying to (as returned by find-recent-emails / read-email in `messages[].id` or `id`). When set, the draft is nested inside that message's existing thread instead of starting a new one: the connector reads the original's Message-ID, References chain, and threadId, writes the In-Reply-To/References headers, prefixes \"Re: \" on the subject if not already present, and files the draft on the same thread. Leave empty for a brand-new conversation."
+required = false
+label = "In reply to (message id)"
 +++
 
 # Draft an Email
@@ -86,6 +93,17 @@ When it fires:
 - "draft a reply to alice saying we'll have the migration done by Friday"
 - "write an email to the team about the deploy outage"
 - "draft a thank-you note to my hiring manager"
+
+## Replying within a thread
+
+To draft a reply that lands **inside** an existing Gmail conversation
+rather than as a standalone message grouped only by subject, pass the
+original message's id as `in_reply_to_message_id` (you get it from
+`find-recent-emails` or `read-email`). The connector fetches that
+message, copies its threading headers (In-Reply-To / References) onto
+the draft, prefixes `Re: ` on the subject when it isn't already, and
+files the draft on the same `threadId`. Omit the field and behavior is
+exactly as before — a new thread. See issue #37.
 
 This action writes to your Gmail (creates a draft). It is **not
 idempotent** — invoking it twice creates two drafts. The runtime's

@@ -27,6 +27,24 @@ import (
 // producing mojibake on display); ASCII subjects pass through untouched.
 // The body carries its own charset via Content-Type and is left as-is.
 func buildRFC2822(to, cc, bcc, subject, body string) string {
+	return buildRFC2822Reply(to, cc, bcc, subject, body, "", "")
+}
+
+// buildRFC2822Reply is buildRFC2822 plus the two threading headers Gmail
+// needs to nest a message inside an existing thread: In-Reply-To (the
+// original message's Message-ID) and References (the original message's
+// References chain, with its Message-ID appended). When both inReplyTo
+// and references are "" the output is byte-for-byte identical to the
+// pre-threading buildRFC2822 — the headers are simply omitted — so the
+// non-reply path is provably unchanged.
+//
+// Setting threadId on the drafts.create / messages.send request body is
+// what actually groups the message in Gmail's UI; the In-Reply-To /
+// References headers are what RFC-compliant clients (and Gmail's own
+// conversation collapsing) use to position the reply within the thread.
+// Both are required for a clean reply, so the caller sets threadId and
+// passes these headers here.
+func buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references string) string {
 	var b strings.Builder
 	b.WriteString("To: ")
 	b.WriteString(to)
@@ -44,10 +62,86 @@ func buildRFC2822(to, cc, bcc, subject, body string) string {
 	b.WriteString("Subject: ")
 	b.WriteString(mime.QEncoding.Encode("utf-8", subject))
 	b.WriteString("\r\n")
+	if inReplyTo != "" {
+		b.WriteString("In-Reply-To: ")
+		b.WriteString(inReplyTo)
+		b.WriteString("\r\n")
+	}
+	if references != "" {
+		b.WriteString("References: ")
+		b.WriteString(references)
+		b.WriteString("\r\n")
+	}
 	b.WriteString("Content-Type: text/plain; charset=\"UTF-8\"\r\n")
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return b.String()
+}
+
+// replyThreadingHeaders derives the threading data needed to nest a
+// reply inside an existing Gmail thread, given the original message's
+// headers (the payload.headers[] array from users.messages.get with
+// format=metadata, where each entry is {"name":..,"value":..}).
+//
+// Returns:
+//
+//	inReplyTo  — the original Message-ID, verbatim (incl. its angle
+//	             brackets), suitable for the In-Reply-To header. "" if
+//	             the original carried no Message-ID.
+//	references — the original References chain with the original
+//	             Message-ID appended (space-separated, per RFC 5322).
+//	             Falls back to just the Message-ID when the original had
+//	             no References header (it was the thread root). "" only
+//	             when there is no Message-ID at all.
+//
+// Header name matching is case-insensitive because RFC 5322 header
+// field names are case-insensitive and Gmail's metadata format echoes
+// whatever casing the original sender used.
+func replyThreadingHeaders(headers []any) (inReplyTo, references string) {
+	messageID := extractHeader(headers, "Message-ID")
+	origRefs := extractHeader(headers, "References")
+	if messageID == "" {
+		return "", ""
+	}
+	if origRefs != "" {
+		return messageID, origRefs + " " + messageID
+	}
+	return messageID, messageID
+}
+
+// extractHeader returns the value of the named header from a Gmail
+// payload.headers[] array (case-insensitive), or "" if absent. Each
+// element is expected to be a map with "name" and "value" string keys;
+// non-conforming elements are skipped.
+func extractHeader(headers []any, name string) string {
+	for _, h := range headers {
+		m, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		n, _ := m["name"].(string)
+		if strings.EqualFold(n, name) {
+			v, _ := m["value"].(string)
+			return v
+		}
+	}
+	return ""
+}
+
+// ensureRePrefix prefixes "Re: " onto a subject for a reply, unless the
+// subject already opens with a reply marker. Matching is case-insensitive
+// and tolerates leading whitespace ("re:", "RE:", "  Re: foo" are all
+// treated as already-prefixed) so threaded replies don't accrete
+// "Re: Re: Re:". Only the exact "re:" token (three chars) is recognised:
+// "Re :" with a space before the colon does NOT match and would get a
+// fresh prefix — acceptable since mail clients emit "Re:" without the
+// space, so this only affects hand-typed oddities.
+func ensureRePrefix(subject string) string {
+	trimmed := strings.TrimSpace(subject)
+	if len(trimmed) >= 3 && strings.EqualFold(trimmed[:3], "re:") {
+		return subject
+	}
+	return "Re: " + subject
 }
 
 // normalizeAttendees accepts either a comma-separated string or a JSON

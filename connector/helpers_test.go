@@ -116,6 +116,143 @@ func TestBuildRFC2822_NonAsciiSubjectIsRFC2047Encoded(t *testing.T) {
 	}
 }
 
+// --- buildRFC2822Reply / threading headers ---
+
+func TestBuildRFC2822_NoReplyArgsIsByteForByteUnchanged(t *testing.T) {
+	// The non-reply convenience wrapper must produce output identical to
+	// the reply builder called with empty threading args — this is the
+	// "param absent => unchanged" guarantee in structural form.
+	plain := buildRFC2822("a@b.c", "x@y.z", "", "Hi", "body")
+	reply := buildRFC2822Reply("a@b.c", "x@y.z", "", "Hi", "body", "", "")
+	if plain != reply {
+		t.Errorf("empty-threading reply differs from plain:\n plain %q\n reply %q", plain, reply)
+	}
+}
+
+func TestBuildRFC2822Reply_InjectsThreadingHeaders(t *testing.T) {
+	got := buildRFC2822Reply(
+		"a@b.c", "", "", "Re: Hi", "body",
+		"<orig@mail.example>",
+		"<root@mail.example> <orig@mail.example>",
+	)
+	for _, want := range []string{
+		"In-Reply-To: <orig@mail.example>\r\n",
+		"References: <root@mail.example> <orig@mail.example>\r\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	// Threading headers must precede the body separator.
+	sep := strings.Index(got, "\r\n\r\n")
+	if sep < 0 || strings.Index(got, "In-Reply-To:") > sep {
+		t.Errorf("In-Reply-To header not in header block:\n%s", got)
+	}
+}
+
+func TestBuildRFC2822Reply_OmitsHeadersWhenEmpty(t *testing.T) {
+	got := buildRFC2822Reply("a@b.c", "", "", "S", "B", "", "")
+	if strings.Contains(got, "In-Reply-To:") {
+		t.Errorf("unexpected In-Reply-To header: %q", got)
+	}
+	if strings.Contains(got, "References:") {
+		t.Errorf("unexpected References header: %q", got)
+	}
+}
+
+func hdrs(pairs ...[2]string) []any {
+	out := make([]any, 0, len(pairs))
+	for _, p := range pairs {
+		out = append(out, map[string]any{"name": p[0], "value": p[1]})
+	}
+	return out
+}
+
+func TestReplyThreadingHeaders_WithExistingReferencesChain(t *testing.T) {
+	h := hdrs(
+		[2]string{"Subject", "Hello"},
+		[2]string{"Message-ID", "<msg2@example.com>"},
+		[2]string{"References", "<msg0@example.com> <msg1@example.com>"},
+	)
+	inReplyTo, references := replyThreadingHeaders(h)
+	if inReplyTo != "<msg2@example.com>" {
+		t.Errorf("inReplyTo = %q", inReplyTo)
+	}
+	want := "<msg0@example.com> <msg1@example.com> <msg2@example.com>"
+	if references != want {
+		t.Errorf("references = %q, want %q", references, want)
+	}
+}
+
+func TestReplyThreadingHeaders_ThreadRootHasNoReferences(t *testing.T) {
+	h := hdrs([2]string{"Message-ID", "<root@example.com>"})
+	inReplyTo, references := replyThreadingHeaders(h)
+	if inReplyTo != "<root@example.com>" {
+		t.Errorf("inReplyTo = %q", inReplyTo)
+	}
+	// With no prior References, the chain seeds from the Message-ID alone.
+	if references != "<root@example.com>" {
+		t.Errorf("references = %q, want seed from Message-ID", references)
+	}
+}
+
+func TestReplyThreadingHeaders_CaseInsensitiveHeaderNames(t *testing.T) {
+	h := hdrs(
+		[2]string{"message-id", "<lower@example.com>"},
+		[2]string{"REFERENCES", "<a@example.com>"},
+	)
+	inReplyTo, references := replyThreadingHeaders(h)
+	if inReplyTo != "<lower@example.com>" {
+		t.Errorf("inReplyTo = %q (case-insensitive Message-ID lookup failed)", inReplyTo)
+	}
+	if references != "<a@example.com> <lower@example.com>" {
+		t.Errorf("references = %q", references)
+	}
+}
+
+func TestReplyThreadingHeaders_NoMessageIDYieldsEmpty(t *testing.T) {
+	h := hdrs([2]string{"Subject", "no id here"})
+	inReplyTo, references := replyThreadingHeaders(h)
+	if inReplyTo != "" || references != "" {
+		t.Errorf("expected empty threading headers; got (%q, %q)", inReplyTo, references)
+	}
+}
+
+func TestExtractHeader_SkipsNonMapEntries(t *testing.T) {
+	// Non-conforming (non-map) elements must be skipped, not panic the
+	// lookup, so a later well-formed header is still found.
+	h := []any{
+		"not a map",
+		42,
+		map[string]any{"name": "Subject", "value": "Found"},
+	}
+	if got := extractHeader(h, "Subject"); got != "Found" {
+		t.Errorf("extractHeader = %q, want Found", got)
+	}
+	if got := extractHeader(h, "Missing"); got != "" {
+		t.Errorf("extractHeader(Missing) = %q, want empty", got)
+	}
+}
+
+func TestEnsureRePrefix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"Project update", "Re: Project update"},
+		{"Re: Project update", "Re: Project update"},
+		{"RE: shouting", "RE: shouting"},
+		{"re: lower", "re: lower"},
+		{"  Re: leading space", "  Re: leading space"},
+		{"", "Re: "},
+		{"Reply but not prefix", "Re: Reply but not prefix"},
+	}
+	for _, c := range cases {
+		if got := ensureRePrefix(c.in); got != c.want {
+			t.Errorf("ensureRePrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // --- normalizeAttendees ---
 
 func TestNormalizeAttendees_StringFormSplitsAndTrims(t *testing.T) {
