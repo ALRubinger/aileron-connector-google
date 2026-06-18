@@ -130,10 +130,12 @@ func extractHeader(headers []any, name string) string {
 
 // ensureRePrefix prefixes "Re: " onto a subject for a reply, unless the
 // subject already opens with a reply marker. Matching is case-insensitive
-// and tolerates leading whitespace ("re:", "RE:", "Re :" are all treated
-// as already-prefixed) so threaded replies don't accrete "Re: Re: Re:".
-// Note: "Re :" (space before colon) is NOT collapsed — only the exact
-// "re:" token is recognised, matching how mail clients format the marker.
+// and tolerates leading whitespace ("re:", "RE:", "  Re: foo" are all
+// treated as already-prefixed) so threaded replies don't accrete
+// "Re: Re: Re:". Only the exact "re:" token (three chars) is recognised:
+// "Re :" with a space before the colon does NOT match and would get a
+// fresh prefix — acceptable since mail clients emit "Re:" without the
+// space, so this only affects hand-typed oddities.
 func ensureRePrefix(subject string) string {
 	trimmed := strings.TrimSpace(subject)
 	if len(trimmed) >= 3 && strings.EqualFold(trimmed[:3], "re:") {
