@@ -74,6 +74,13 @@ type = "string"
 description = "Optional comma-separated Bcc addresses."
 required = false
 label = "Bcc"
+
+[[inputs]]
+name = "in_reply_to_message_id"
+type = "string"
+description = "Optional. The Gmail message id you are replying to (as returned by find-recent-emails / read-email in `messages[].id` or `id`). When set, the sent message is nested inside that message's existing thread instead of starting a new one: the connector reads the original's Message-ID, References chain, and threadId, writes the In-Reply-To/References headers, prefixes \"Re: \" on the subject if not already present, and sends on the same thread. Leave empty for a brand-new conversation."
+required = false
+label = "In reply to (message id)"
 +++
 
 # Send an Email
@@ -86,6 +93,17 @@ When it fires:
 - "send the recap email we just drafted"
 - "email alice that the deploy is done"
 - "send a thank-you note to my hiring manager"
+
+## Replying within a thread
+
+To send a reply that lands **inside** an existing Gmail conversation
+rather than as a standalone message grouped only by subject, pass the
+original message's id as `in_reply_to_message_id` (you get it from
+`find-recent-emails` or `read-email`). The connector fetches that
+message, copies its threading headers (In-Reply-To / References) onto
+the outgoing message, prefixes `Re: ` on the subject when it isn't
+already, and sends on the same `threadId`. Omit the field and behavior
+is exactly as before — a new thread. See issue #37.
 
 This action is **gated on per-call user approval**. When the agent
 calls `send_email`, the Aileron runtime pauses the call and asks the

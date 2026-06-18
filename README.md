@@ -43,6 +43,16 @@ metadata (subject, from, snippet) for one or more results. Agent flows
 that summarize the inbox typically fan out parallel `get-email` calls
 after one `list-recent-emails`.
 
+`draft-email` and `send-email` both take an optional
+`in_reply_to_message_id` (a message id from `list-recent-emails` /
+`get-email`). When set, the connector GETs that message, copies its
+In-Reply-To / References headers and `threadId` onto the new message,
+and prefixes `Re: ` on the subject — so the draft/sent reply nests
+inside the original Gmail thread instead of starting a fresh one
+grouped only by subject. Omit it and the request is unchanged. The
+op, endpoint, scope, approval, and idempotency profile are identical
+with or without the field (issue #37).
+
 All twenty-one run inside the Aileron WASM sandbox with
 `[capabilities.network]` restricted to `gmail.googleapis.com:443`,
 `www.googleapis.com:443`, `people.googleapis.com:443`, and

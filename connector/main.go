@@ -393,6 +393,53 @@ func listUpcomingEvents(args map[string]any) {
 	writeOutput(parsed)
 }
 
+// replyContext carries the data needed to nest a new message inside an
+// existing Gmail thread, derived from the original message identified by
+// in_reply_to_message_id.
+type replyContext struct {
+	threadID   string // drafts.create / messages.send threadId
+	inReplyTo  string // In-Reply-To header value (original Message-ID)
+	references string // References header value (chain + Message-ID)
+}
+
+// fetchReplyContext GETs the original message (format=metadata) and
+// extracts the threading data needed to thread a reply. It is only
+// called when in_reply_to_message_id is supplied; when absent, the
+// draft/send paths skip this entirely and behave byte-for-byte as
+// before. On any failure it returns a non-nil error string suitable for
+// surfacing via writeError under the calling op's name.
+//
+// format=metadata returns payload.headers[] (carrying Message-ID and
+// References) plus the top-level threadId — everything needed to
+// position the reply — without paying for the full MIME body.
+func fetchReplyContext(op, messageID string) (*replyContext, string) {
+	q := url.Values{}
+	q.Set("format", "metadata")
+	target := "https://gmail.googleapis.com/gmail/v1/users/me/messages/" +
+		url.PathEscape(messageID) + "?" + q.Encode()
+
+	body, status, err := doAuthenticatedGet(target)
+	if err != nil {
+		return nil, op + ": fetch in_reply_to_message_id: " + err.Error()
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Sprintf("%s: fetching in_reply_to_message_id, Gmail API returned %d: %s", op, status, string(body))
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, op + ": parse in_reply_to_message_id: " + err.Error()
+	}
+
+	rc := &replyContext{}
+	rc.threadID, _ = parsed["threadId"].(string)
+	if payload, ok := parsed["payload"].(map[string]any); ok {
+		if headers, ok := payload["headers"].([]any); ok {
+			rc.inReplyTo, rc.references = replyThreadingHeaders(headers)
+		}
+	}
+	return rc, ""
+}
+
 // draftEmail creates a Gmail draft via users.drafts.create.
 //
 //	POST https://gmail.googleapis.com/gmail/v1/users/me/drafts
@@ -410,6 +457,14 @@ func listUpcomingEvents(args map[string]any) {
 //	body     (string, required) — message body (text/plain).
 //	cc       (string, optional) — comma-separated Cc addresses.
 //	bcc      (string, optional) — comma-separated Bcc addresses.
+//	in_reply_to_message_id (string, optional) — a Gmail message id (as
+//	         returned by list_recent_emails / get_email). When set, the
+//	         draft is nested inside that message's thread: the connector
+//	         fetches the original to read its Message-ID, References
+//	         chain and threadId, then writes In-Reply-To / References
+//	         headers, prefixes "Re: " on the subject when not already
+//	         present, and sets threadId on the draft. When absent the
+//	         request is byte-for-byte unchanged.
 //
 // Output: the created draft's API representation (id, message id, etc.).
 //
@@ -420,6 +475,7 @@ func draftEmail(args map[string]any) {
 	to, _ := args["to"].(string)
 	subject, _ := args["subject"].(string)
 	body, _ := args["body"].(string)
+	inReplyToID, _ := args["in_reply_to_message_id"].(string)
 	if to == "" || subject == "" || body == "" {
 		writeError("connector_runtime_error", "draft_email: to, subject, and body are required")
 		return
@@ -427,11 +483,26 @@ func draftEmail(args map[string]any) {
 	cc, _ := args["cc"].(string)
 	bcc, _ := args["bcc"].(string)
 
-	rfc2822 := buildRFC2822(to, cc, bcc, subject, body)
+	var inReplyTo, references, threadID string
+	if inReplyToID != "" {
+		rc, errMsg := fetchReplyContext("draft_email", inReplyToID)
+		if errMsg != "" {
+			writeError("external_api_error", errMsg)
+			return
+		}
+		inReplyTo, references, threadID = rc.inReplyTo, rc.references, rc.threadID
+		subject = ensureRePrefix(subject)
+	}
+
+	rfc2822 := buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references)
 	encoded := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(rfc2822))
 
+	message := map[string]any{"raw": encoded}
+	if threadID != "" {
+		message["threadId"] = threadID
+	}
 	reqBody, err := json.Marshal(map[string]any{
-		"message": map[string]any{"raw": encoded},
+		"message": message,
 	})
 	if err != nil {
 		writeError("connector_runtime_error", "draft_email: encode request: "+err.Error())
@@ -474,6 +545,14 @@ func draftEmail(args map[string]any) {
 //	body     (string, required) — message body (text/plain).
 //	cc       (string, optional) — comma-separated Cc addresses.
 //	bcc      (string, optional) — comma-separated Bcc addresses.
+//	in_reply_to_message_id (string, optional) — a Gmail message id (as
+//	         returned by list_recent_emails / get_email). When set, the
+//	         sent message is nested inside that message's thread: the
+//	         connector fetches the original to read its Message-ID,
+//	         References chain and threadId, then writes In-Reply-To /
+//	         References headers, prefixes "Re: " on the subject when not
+//	         already present, and sets threadId on the send. When absent
+//	         the request is byte-for-byte unchanged.
 //
 // Output: the sent message's API representation (id, threadId, labelIds).
 //
@@ -485,6 +564,7 @@ func sendEmail(args map[string]any) {
 	to, _ := args["to"].(string)
 	subject, _ := args["subject"].(string)
 	body, _ := args["body"].(string)
+	inReplyToID, _ := args["in_reply_to_message_id"].(string)
 	if to == "" || subject == "" || body == "" {
 		writeError("connector_runtime_error", "send_email: to, subject, and body are required")
 		return
@@ -492,10 +572,25 @@ func sendEmail(args map[string]any) {
 	cc, _ := args["cc"].(string)
 	bcc, _ := args["bcc"].(string)
 
-	rfc2822 := buildRFC2822(to, cc, bcc, subject, body)
+	var inReplyTo, references, threadID string
+	if inReplyToID != "" {
+		rc, errMsg := fetchReplyContext("send_email", inReplyToID)
+		if errMsg != "" {
+			writeError("external_api_error", errMsg)
+			return
+		}
+		inReplyTo, references, threadID = rc.inReplyTo, rc.references, rc.threadID
+		subject = ensureRePrefix(subject)
+	}
+
+	rfc2822 := buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references)
 	encoded := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(rfc2822))
 
-	reqBody, err := json.Marshal(map[string]any{"raw": encoded})
+	sendReq := map[string]any{"raw": encoded}
+	if threadID != "" {
+		sendReq["threadId"] = threadID
+	}
+	reqBody, err := json.Marshal(sendReq)
 	if err != nil {
 		writeError("connector_runtime_error", "send_email: encode request: "+err.Error())
 		return
