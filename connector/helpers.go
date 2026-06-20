@@ -196,6 +196,31 @@ func buildListDraftsURL(query string, maxResults int, pageToken string) string {
 	return "https://gmail.googleapis.com/gmail/v1/users/me/drafts?" + q.Encode()
 }
 
+// buildListEventsURL constructs the Calendar events.list endpoint URL.
+// Pulled out of listUpcomingEvents so the wire shape (param names,
+// the time-window bounds, omission of an empty timeMax) is exercisable
+// without the host-import HTTP path.
+//
+// timeMin is required and always set — the caller passes either the
+// supplied RFC3339 time_min or a "now" default, so the query never
+// degrades into an all-of-history scan. timeMax is optional: when
+// non-empty it bounds the upper edge of the window, which is what
+// stops events.list from expanding unbounded far-future recurring
+// instances (e.g. yearly birthdays for 2027/2028/2029…). Both values
+// are passed through verbatim; RFC3339 validation is the API's job.
+func buildListEventsURL(calendarID, timeMin, timeMax string, maxResults int) string {
+	q := url.Values{}
+	q.Set("maxResults", strconv.Itoa(maxResults))
+	q.Set("timeMin", timeMin)
+	if timeMax != "" {
+		q.Set("timeMax", timeMax)
+	}
+	q.Set("singleEvents", "true")
+	q.Set("orderBy", "startTime")
+	return "https://www.googleapis.com/calendar/v3/calendars/" +
+		url.PathEscape(calendarID) + "/events?" + q.Encode()
+}
+
 // readMaxResults extracts max_results from args. The JSON unmarshal
 // produces float64 for numbers; this normalises it to int with a sane
 // default and a sensible upper bound to keep API quotas under control.

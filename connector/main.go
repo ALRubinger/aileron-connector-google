@@ -352,16 +352,23 @@ func getEmail(args map[string]any) {
 // listUpcomingEvents calls Calendar's events.list endpoint.
 //
 //	GET https://www.googleapis.com/calendar/v3/calendars/{calendarId}/events
-//	    ?maxResults={n}&timeMin={now}&singleEvents=true&orderBy=startTime
+//	    ?maxResults={n}&timeMin={t}&timeMax={t}&singleEvents=true&orderBy=startTime
 //
 // Args:
 //
 //	calendar_id  (string, optional) — calendar id; default "primary".
 //	max_results  (number, optional) — page size cap; default 10.
+//	time_min     (string, optional) — RFC3339 lower bound; overrides the
+//	             "now" default, e.g. to ask for a window that starts on a
+//	             specific day.
+//	time_max     (string, optional) — RFC3339 upper bound; when set, caps
+//	             the window so unbounded far-future recurring expansions
+//	             (yearly birthdays, etc.) don't crowd out the result page.
 //
-// Output: the raw Calendar events.list JSON. timeMin is set to "now" so
-// the agent gets upcoming events; singleEvents=true expands recurring
-// events; orderBy=startTime returns chronological order.
+// Output: the raw Calendar events.list JSON. timeMin defaults to "now"
+// (so the agent gets upcoming events) unless time_min is supplied;
+// singleEvents=true expands recurring events; orderBy=startTime returns
+// chronological order.
 func listUpcomingEvents(args map[string]any) {
 	calendarID, _ := args["calendar_id"].(string)
 	if calendarID == "" {
@@ -369,12 +376,13 @@ func listUpcomingEvents(args map[string]any) {
 	}
 	maxResults := readMaxResults(args, 10)
 
-	q := url.Values{}
-	q.Set("maxResults", strconv.Itoa(maxResults))
-	q.Set("timeMin", time.Now().UTC().Format(time.RFC3339))
-	q.Set("singleEvents", "true")
-	q.Set("orderBy", "startTime")
-	target := "https://www.googleapis.com/calendar/v3/calendars/" + url.PathEscape(calendarID) + "/events?" + q.Encode()
+	timeMin, _ := args["time_min"].(string)
+	if timeMin == "" {
+		timeMin = time.Now().UTC().Format(time.RFC3339)
+	}
+	timeMax, _ := args["time_max"].(string)
+
+	target := buildListEventsURL(calendarID, timeMin, timeMax, maxResults)
 
 	body, status, err := doAuthenticatedGet(target)
 	if err != nil {

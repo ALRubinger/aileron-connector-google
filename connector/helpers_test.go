@@ -353,6 +353,80 @@ func TestBuildListDraftsURL_AllParamsCombined(t *testing.T) {
 	}
 }
 
+// --- buildListEventsURL ---
+
+func TestBuildListEventsURL_BaseEndpointAndStaticParams(t *testing.T) {
+	got := buildListEventsURL("primary", "2026-06-20T00:00:00Z", "", 10)
+	const prefix = "https://www.googleapis.com/calendar/v3/calendars/primary/events?"
+	if !strings.HasPrefix(got, prefix) {
+		t.Errorf("got %q, want prefix %q", got, prefix)
+	}
+	// singleEvents + orderBy must always be present so recurring events
+	// expand and come back chronologically — the contract the action
+	// promises regardless of the time window.
+	for _, want := range []string{"singleEvents=true", "orderBy=startTime", "maxResults=10"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestBuildListEventsURL_DefaultSetsTimeMinOnly(t *testing.T) {
+	// The "now" default is computed by the caller and passed in as
+	// time_min; with no time_max the upper bound is omitted entirely.
+	got := buildListEventsURL("primary", "2026-06-20T12:00:00Z", "", 10)
+	// url.Values encodes ":" as "%3A".
+	if !strings.Contains(got, "timeMin=2026-06-20T12%3A00%3A00Z") {
+		t.Errorf("missing url-encoded timeMin in %q", got)
+	}
+	if strings.Contains(got, "timeMax=") {
+		t.Errorf("empty time_max should be omitted; got %q", got)
+	}
+}
+
+func TestBuildListEventsURL_TimeMinOnlyHonorsSuppliedLowerBound(t *testing.T) {
+	got := buildListEventsURL("primary", "2026-06-15T00:00:00Z", "", 10)
+	if !strings.Contains(got, "timeMin=2026-06-15T00%3A00%3A00Z") {
+		t.Errorf("supplied time_min not honored in %q", got)
+	}
+	if strings.Contains(got, "timeMax=") {
+		t.Errorf("time_max should be absent; got %q", got)
+	}
+}
+
+func TestBuildListEventsURL_TimeMaxOnlyBoundsUpperEdge(t *testing.T) {
+	got := buildListEventsURL("primary", "2026-06-20T00:00:00Z", "2026-06-21T23:59:59Z", 10)
+	if !strings.Contains(got, "timeMax=2026-06-21T23%3A59%3A59Z") {
+		t.Errorf("missing url-encoded timeMax in %q", got)
+	}
+}
+
+func TestBuildListEventsURL_BothBoundsSet(t *testing.T) {
+	got := buildListEventsURL("primary", "2026-06-15T00:00:00Z", "2026-06-21T23:59:59Z", 25)
+	for _, want := range []string{
+		"timeMin=2026-06-15T00%3A00%3A00Z",
+		"timeMax=2026-06-21T23%3A59%3A59Z",
+		"maxResults=25",
+		"singleEvents=true",
+		"orderBy=startTime",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestBuildListEventsURL_PathEscapesCalendarID(t *testing.T) {
+	// A calendar id can contain a "/" (e.g. a group address segment or a
+	// resource id); url.PathEscape must encode it so it can't break out
+	// of the {calendarId} path segment. "@" is a legal path sub-delim and
+	// is left intact, matching url.PathEscape's behavior.
+	got := buildListEventsURL("a/b@example.com", "2026-06-20T00:00:00Z", "", 10)
+	if !strings.Contains(got, "/calendars/a%2Fb@example.com/events?") {
+		t.Errorf("calendar id not path-escaped in %q", got)
+	}
+}
+
 // --- readMaxResults ---
 
 func TestReadMaxResults_MissingKeyReturnsDefault(t *testing.T) {
