@@ -16,7 +16,7 @@ Calendar, Google Contacts, Google Drive, and Google Docs:
 | Action | Op | HTTP | Endpoint |
 |---|---|---|---|
 | `list-recent-emails` | `list_recent_emails` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages` |
-| `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata` |
+| `get-email` | `get_email` | GET | `gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format={metadata\|full}` |
 | `list-drafts` | `list_drafts` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts` |
 | `get-draft` | `get_draft` | GET | `gmail.googleapis.com/gmail/v1/users/me/drafts/{id}?format=metadata` |
 | `list-upcoming-events` | `list_upcoming_events` | GET | `www.googleapis.com/calendar/v3/calendars/{calendarId}/events` |

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -824,5 +825,184 @@ func TestDriveParentsList_NilAndUnsupportedReturnEmpty(t *testing.T) {
 		if got := driveParentsList(in); got != "" {
 			t.Errorf("input %#v: got %q, want empty", in, got)
 		}
+	}
+}
+
+// --- normalizeEmailFormat ---
+
+func TestNormalizeEmailFormat(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"absent/nil defaults to metadata", nil, "metadata"},
+		{"empty string defaults to metadata", "", "metadata"},
+		{"explicit metadata", "metadata", "metadata"},
+		{"full", "full", "full"},
+		{"full case-insensitive", "FULL", "full"},
+		{"full whitespace-tolerant", "  full  ", "full"},
+		{"unrecognized falls back to metadata", "raw", "metadata"},
+		{"non-string falls back to metadata", 42, "metadata"},
+		{"bool falls back to metadata", true, "metadata"},
+	}
+	for _, c := range cases {
+		if got := normalizeEmailFormat(c.in); got != c.want {
+			t.Errorf("%s: normalizeEmailFormat(%#v) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// --- decodeGmailBase64URL ---
+
+func b64url(s string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(s))
+}
+
+func TestDecodeGmailBase64URL(t *testing.T) {
+	t.Run("decodes unpadded URL-safe", func(t *testing.T) {
+		// "subjects?" contains bytes that exercise the URL-safe alphabet.
+		enc := base64.RawURLEncoding.EncodeToString([]byte("hello >> world??"))
+		got, ok := decodeGmailBase64URL(enc)
+		if !ok || got != "hello >> world??" {
+			t.Errorf("got (%q, %v)", got, ok)
+		}
+	})
+	t.Run("decodes padded URL-safe fallback", func(t *testing.T) {
+		enc := base64.URLEncoding.EncodeToString([]byte("padded body"))
+		got, ok := decodeGmailBase64URL(enc)
+		if !ok || got != "padded body" {
+			t.Errorf("got (%q, %v)", got, ok)
+		}
+	})
+	t.Run("empty returns false", func(t *testing.T) {
+		if got, ok := decodeGmailBase64URL(""); ok || got != "" {
+			t.Errorf("got (%q, %v), want (\"\", false)", got, ok)
+		}
+	})
+	t.Run("garbage returns false", func(t *testing.T) {
+		if got, ok := decodeGmailBase64URL("!!!not base64!!!"); ok || got != "" {
+			t.Errorf("got (%q, %v), want (\"\", false)", got, ok)
+		}
+	})
+}
+
+// --- extractEmailBody ---
+
+// emailPart is a tiny builder for a Gmail payload/part map in tests.
+func emailPart(mimeType, data string, parts ...map[string]any) map[string]any {
+	p := map[string]any{"mimeType": mimeType}
+	if data != "" {
+		p["body"] = map[string]any{"data": b64url(data)}
+	}
+	if len(parts) > 0 {
+		anyParts := make([]any, len(parts))
+		for i, sub := range parts {
+			anyParts[i] = sub
+		}
+		p["parts"] = anyParts
+	}
+	return p
+}
+
+func TestExtractEmailBody_NonMultipartPlain(t *testing.T) {
+	// A simple message carries its content directly in the top-level
+	// payload.body.data with the top-level mimeType.
+	payload := emailPart("text/plain", "the plain body")
+	body, mt := extractEmailBody(payload)
+	if body != "the plain body" || mt != "text/plain" {
+		t.Errorf("got (%q, %q)", body, mt)
+	}
+}
+
+func TestExtractEmailBody_MultipartAlternativePrefersPlain(t *testing.T) {
+	payload := emailPart("multipart/alternative", "",
+		emailPart("text/plain", "plain version"),
+		emailPart("text/html", "<p>html version</p>"),
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "plain version" || mt != "text/plain" {
+		t.Errorf("got (%q, %q), want plain preferred", body, mt)
+	}
+}
+
+func TestExtractEmailBody_HTMLOnlyFallback(t *testing.T) {
+	payload := emailPart("multipart/alternative", "",
+		emailPart("text/html", "<p>only html</p>"),
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "<p>only html</p>" || mt != "text/html" {
+		t.Errorf("got (%q, %q), want html fallback", body, mt)
+	}
+}
+
+func TestExtractEmailBody_MultipartMixedWithAttachment(t *testing.T) {
+	// The normal case: a body wrapped in multipart/mixed alongside an
+	// attachment part that carries no inline `data` (just an attachmentId).
+	// The walk must skip the attachment and still return the text body.
+	attachment := map[string]any{
+		"mimeType": "application/pdf",
+		"filename": "invoice.pdf",
+		"body":     map[string]any{"attachmentId": "abc123", "size": float64(1024)},
+	}
+	payload := emailPart("multipart/mixed", "",
+		emailPart("text/plain", "see attached"),
+		attachment,
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "see attached" || mt != "text/plain" {
+		t.Errorf("got (%q, %q), want text body past attachment", body, mt)
+	}
+}
+
+func TestExtractEmailBody_NestedMultipartAlternativeInsideMixed(t *testing.T) {
+	// multipart/mixed → multipart/alternative (plain+html) + attachment.
+	// Depth-first recursion must reach the nested plain part.
+	attachment := map[string]any{
+		"mimeType": "image/png",
+		"body":     map[string]any{"attachmentId": "img1"},
+	}
+	payload := emailPart("multipart/mixed", "",
+		emailPart("multipart/alternative", "",
+			emailPart("text/plain", "nested plain"),
+			emailPart("text/html", "<b>nested html</b>"),
+		),
+		attachment,
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "nested plain" || mt != "text/plain" {
+		t.Errorf("got (%q, %q), want nested plain", body, mt)
+	}
+}
+
+func TestExtractEmailBody_NoTextPartReturnsEmpty(t *testing.T) {
+	// An attachment-only payload (no decodable text part) yields nothing,
+	// signaling the caller to omit the body field rather than emit garbage.
+	payload := emailPart("multipart/mixed", "",
+		map[string]any{
+			"mimeType": "application/pdf",
+			"body":     map[string]any{"attachmentId": "only-attachment"},
+		},
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "" || mt != "" {
+		t.Errorf("got (%q, %q), want empty", body, mt)
+	}
+}
+
+func TestExtractEmailBody_SkipsUndecodableThenFindsNext(t *testing.T) {
+	// A text/plain part whose data is not valid base64url must be skipped
+	// so a later well-formed text/html part is still returned.
+	bad := map[string]any{
+		"mimeType": "text/plain",
+		"body":     map[string]any{"data": "!!!garbage!!!"},
+	}
+	payload := emailPart("multipart/alternative", "",
+		bad,
+		emailPart("text/html", "<p>fallback</p>"),
+	)
+	body, mt := extractEmailBody(payload)
+	if body != "<p>fallback</p>" || mt != "text/html" {
+		t.Errorf("got (%q, %q), want html after skipping bad plain", body, mt)
 	}
 }

@@ -8,6 +8,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -483,4 +484,116 @@ func driveParentsList(v any) string {
 	default:
 		return ""
 	}
+}
+
+// normalizeEmailFormat coerces the get_email `format` arg into one of the
+// two values the op supports: "metadata" (the default, headers + snippet
+// only) or "full" (fetch and decode the MIME body). Any absent, empty, or
+// unrecognized value falls back to "metadata" so the cheap fan-out path —
+// "summarize my recent emails" drilling into N messages — stays the
+// default and an unexpected arg can never silently inflate Gmail quota.
+// Matching is case-insensitive and whitespace-tolerant for ergonomics.
+func normalizeEmailFormat(v any) string {
+	s, ok := v.(string)
+	if !ok {
+		return "metadata"
+	}
+	if strings.EqualFold(strings.TrimSpace(s), "full") {
+		return "full"
+	}
+	return "metadata"
+}
+
+// decodeGmailBase64URL decodes the base64url-encoded body bytes Gmail puts
+// in payload.body.data (and each part's body.data). Gmail uses the URL-safe
+// alphabet (-/_ for +//) and omits padding, so RawURLEncoding is the
+// primary decoder; some intermediaries re-pad, so we fall back to the
+// padded URLEncoding. Returns ("", false) when neither decode succeeds so
+// the caller can skip a malformed part rather than emit garbage.
+func decodeGmailBase64URL(data string) (string, bool) {
+	if data == "" {
+		return "", false
+	}
+	if b, err := base64.RawURLEncoding.DecodeString(data); err == nil {
+		return string(b), true
+	}
+	if b, err := base64.URLEncoding.DecodeString(data); err == nil {
+		return string(b), true
+	}
+	return "", false
+}
+
+// extractEmailBody walks a Gmail message `payload` tree (the object
+// returned by users.messages.get?format=full) and returns the decoded
+// body text plus the MIME type it came from.
+//
+// Strategy, depth-first across the nested `parts` tree:
+//   - Prefer the first decodable text/plain part — it is the cheapest
+//     faithful representation for an LLM reader.
+//   - Fall back to the first decodable text/html part when no text/plain
+//     exists (some senders ship HTML-only).
+//
+// multipart/mixed-with-attachment is the normal case, not an edge case:
+// the walk recurses into every `parts[]` child and simply ignores parts
+// whose mimeType is neither text/plain nor text/html (attachments,
+// images, nested non-text containers), so an email with a PDF attached
+// still yields its text body. Attachment bytes are out of scope.
+//
+// A non-multipart message carries its content directly in payload.body.data
+// with the top-level mimeType, which the same code path handles because the
+// root payload is walked like any other part.
+//
+// Returns ("", "") when no decodable text part is found.
+func extractEmailBody(payload map[string]any) (body, mimeType string) {
+	plain, plainOK := emailPartByType(payload, "text/plain")
+	if plainOK {
+		return plain, "text/plain"
+	}
+	html, htmlOK := emailPartByType(payload, "text/html")
+	if htmlOK {
+		return html, "text/html"
+	}
+	return "", ""
+}
+
+// emailPartByType depth-first searches a Gmail payload/part subtree for
+// the first part whose mimeType equals want (case-insensitive) and whose
+// body.data decodes cleanly, returning its decoded text. Recurses into
+// nested `parts[]` so multipart/alternative and multipart/mixed trees of
+// any depth are handled uniformly.
+func emailPartByType(part map[string]any, want string) (string, bool) {
+	if part == nil {
+		return "", false
+	}
+	mt, _ := part["mimeType"].(string)
+	if strings.EqualFold(mt, want) {
+		if data := emailPartData(part); data != "" {
+			if decoded, ok := decodeGmailBase64URL(data); ok {
+				return decoded, true
+			}
+		}
+	}
+	parts, _ := part["parts"].([]any)
+	for _, p := range parts {
+		child, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		if decoded, ok := emailPartByType(child, want); ok {
+			return decoded, true
+		}
+	}
+	return "", false
+}
+
+// emailPartData pulls the base64url `data` string out of a part's `body`
+// object, or "" when the part has no inline body (e.g. an attachment, which
+// carries an attachmentId instead of data, or a container part).
+func emailPartData(part map[string]any) string {
+	body, ok := part["body"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	data, _ := body["data"].(string)
+	return data
 }
