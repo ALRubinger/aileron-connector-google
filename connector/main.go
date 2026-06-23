@@ -17,8 +17,10 @@
 //	{"op": "list_recent_emails", "args": {"query": "is:unread", "max_results": 10}}
 //	  → {"output": {"messages": [...]}}
 //
-//	{"op": "get_email", "args": {"id": "19df4136f28569d2"}}
+//	{"op": "get_email", "args": {"id": "19df4136f28569d2", "format": "metadata"}}
 //	  → {"output": {"id": "...", "snippet": "...", "payload": {"headers": [...]}, ...}}
+//	  with "format": "full" the output also carries a decoded "body" and
+//	  "body_mime_type"
 //
 //	{"op": "list_upcoming_events", "args": {"calendar_id": "primary", "max_results": 10}}
 //	  → {"output": {"items": [...]}}
@@ -303,32 +305,43 @@ func listRecentEmails(args map[string]any) {
 }
 
 // getEmail calls Gmail's users.messages.get endpoint for a single
-// message id with format=metadata.
+// message id. The `format` arg gates how much the call fetches:
 //
 //	GET https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=metadata
+//	GET https://gmail.googleapis.com/gmail/v1/users/me/messages/{id}?format=full
 //
-// `format=metadata` returns headers (Subject, From, To, Date, etc.),
-// labelIds, snippet (~200-char body preview), and internalDate without
-// fetching the full MIME body. That is the right call cost / utility
-// trade-off for "summarize my recent emails" and "what does this email
-// say at a glance" agent flows. For full-body access, callers can add
-// a future `format` arg or a separate `get_email_body` op.
+// format=metadata (the default) returns headers (Subject, From, To, Date,
+// etc.), labelIds, snippet (~200-char body preview), and internalDate
+// without fetching the full MIME body. That is the right call cost /
+// utility trade-off for "summarize my recent emails" and "what does this
+// email say at a glance" agent flows: ten metadata get_email calls cost
+// about as much Gmail quota as one list_recent_emails.
+//
+// format=full additionally fetches the complete MIME payload and the
+// connector walks it to decode the message body — preferring the
+// text/plain part, falling back to text/html — exposing it as a top-level
+// `body` field (and `body_mime_type`) on the output. This is opt-in so the
+// cheap default path is unchanged. Attachment bytes are out of scope.
 //
 // Args:
 //
-//	id  (string, required) — Gmail message id, as returned by
-//	    `list_recent_emails` in `messages[].id`.
+//	id      (string, required) — Gmail message id, as returned by
+//	        `list_recent_emails` in `messages[].id`.
+//	format  (string, optional) — "metadata" (default) or "full".
+//	        Unrecognized values fall back to "metadata".
 //
 // Output: the parsed users.messages.get response. The agent typically
-// reads `payload.headers[]` and `snippet` directly.
+// reads `payload.headers[]` and `snippet`; with format=full it also reads
+// the decoded `body`.
 func getEmail(args map[string]any) {
 	id, _ := args["id"].(string)
 	if id == "" {
 		writeError("connector_runtime_error", "get_email: id is required")
 		return
 	}
+	format := normalizeEmailFormat(args["format"])
 	q := url.Values{}
-	q.Set("format", "metadata")
+	q.Set("format", format)
 	target := "https://gmail.googleapis.com/gmail/v1/users/me/messages/" +
 		url.PathEscape(id) + "?" + q.Encode()
 
@@ -345,6 +358,14 @@ func getEmail(args map[string]any) {
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		writeError("connector_runtime_error", "get_email: parse: "+err.Error())
 		return
+	}
+	if format == "full" {
+		if payload, ok := parsed["payload"].(map[string]any); ok {
+			if decoded, mimeType := extractEmailBody(payload); mimeType != "" {
+				parsed["body"] = decoded
+				parsed["body_mime_type"] = mimeType
+			}
+		}
 	}
 	writeOutput(parsed)
 }
