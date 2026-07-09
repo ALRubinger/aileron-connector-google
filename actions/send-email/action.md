@@ -81,6 +81,14 @@ type = "string"
 description = "Optional. The Gmail message id you are replying to (as returned by find-recent-emails / read-email in `messages[].id` or `id`). When set, the sent message is nested inside that message's existing thread instead of starting a new one: the connector reads the original's Message-ID, References chain, and threadId, writes the In-Reply-To/References headers, prefixes \"Re: \" on the subject if not already present, and sends on the same thread. Leave empty for a brand-new conversation."
 required = false
 label = "In reply to (message id)"
+
+[[inputs]]
+name = "attachments"
+type = "array"
+items_type = "object"
+description = "Optional. Array of files to attach, each an object `{\"filename\": \"report.html\", \"content\": \"<html>…</html>\", \"mimeType\": \"text/html\"}`. `filename` and `content` are required; `mimeType` defaults to `text/plain`. When present the email is sent as a multipart/mixed message and each file arrives as a true attachment (Content-Disposition: attachment). v1 supports **text-like content only** (text/*, application/json, application/xml, application/yaml, etc.) — a self-contained UTF-8 HTML report is the primary use case. Non-text content (PDF/image bytes) is rejected: binary attachments are deferred until the host exposes a binary-body carrier (see the note below)."
+required = false
+label = "Attachments"
 +++
 
 # Send an Email
@@ -104,6 +112,29 @@ message, copies its threading headers (In-Reply-To / References) onto
 the outgoing message, prefixes `Re: ` on the subject when it isn't
 already, and sends on the same `threadId`. Omit the field and behavior
 is exactly as before — a new thread. See issue #37.
+
+## Attachments
+
+Pass `attachments` to send the message as a `multipart/mixed` email
+with one or more files attached. Each element is
+`{"filename": "...", "content": "...", "mimeType": "..."}`; the
+connector emits a text body part plus one base64-encoded attachment
+part per file, so the recipient receives real attachments rather than
+inline text or a Drive link. Omit `attachments` and the message is
+byte-for-byte the previous single-part `text/plain` output — the plain
+path is provably unchanged.
+
+**Text-only in v1 (deferral).** Attachment content must be text-like
+(text/*, application/json, application/xml, application/yaml, and
+similar); a self-contained UTF-8 HTML report is the intended MVP and
+round-trips cleanly. Binary attachments (PDFs, images) are **out of
+scope for now**: the connector receives its request body as a JSON
+string over the host ABI, which coerces arbitrary bytes to valid UTF-8
+and would silently corrupt binary content. Lifting this needs a
+host-ABI binary-body field that does not exist yet (tracked as an
+external dependency in ALRubinger/aileron — the same gap that limits
+the Drive `upload-file` path); until it lands, non-text `mimeType`
+values are rejected with a clear error.
 
 This action is **gated on per-call user approval**. When the agent
 calls `send_email`, the Aileron runtime pauses the call and asks the
