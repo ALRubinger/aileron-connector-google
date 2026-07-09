@@ -494,6 +494,13 @@ func fetchReplyContext(op, messageID string) (*replyContext, string) {
 //	         headers, prefixes "Re: " on the subject when not already
 //	         present, and sets threadId on the draft. When absent the
 //	         request is byte-for-byte unchanged.
+//	attachments (array, optional) — array of {filename, content,
+//	         mimeType?} objects. When present the draft is built as a
+//	         multipart/mixed message: a text body part plus one
+//	         base64-encoded attachment part per file. v1 accepts
+//	         text-like content only (isTextLikeMIME); non-text mimeTypes
+//	         are rejected. When absent/empty the message is byte-for-byte
+//	         the single-part text/plain output.
 //
 // Output: the created draft's API representation (id, message id, etc.).
 //
@@ -512,6 +519,12 @@ func draftEmail(args map[string]any) {
 	cc, _ := args["cc"].(string)
 	bcc, _ := args["bcc"].(string)
 
+	attachments, err := normalizeAttachments(args["attachments"])
+	if err != nil {
+		writeError("connector_runtime_error", "draft_email: "+err.Error())
+		return
+	}
+
 	var inReplyTo, references, threadID string
 	if inReplyToID != "" {
 		rc, errMsg := fetchReplyContext("draft_email", inReplyToID)
@@ -523,7 +536,11 @@ func draftEmail(args map[string]any) {
 		subject = ensureRePrefix(subject)
 	}
 
-	rfc2822 := buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references)
+	rfc2822, err := buildRFC2822WithAttachments(to, cc, bcc, subject, body, inReplyTo, references, "", attachments)
+	if err != nil {
+		writeError("connector_runtime_error", "draft_email: build message: "+err.Error())
+		return
+	}
 	encoded := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(rfc2822))
 
 	message := map[string]any{"raw": encoded}
@@ -582,6 +599,13 @@ func draftEmail(args map[string]any) {
 //	         References headers, prefixes "Re: " on the subject when not
 //	         already present, and sets threadId on the send. When absent
 //	         the request is byte-for-byte unchanged.
+//	attachments (array, optional) — array of {filename, content,
+//	         mimeType?} objects. When present the message is built as a
+//	         multipart/mixed message: a text body part plus one
+//	         base64-encoded attachment part per file. v1 accepts
+//	         text-like content only (isTextLikeMIME); non-text mimeTypes
+//	         are rejected. When absent/empty the message is byte-for-byte
+//	         the single-part text/plain output.
 //
 // Output: the sent message's API representation (id, threadId, labelIds).
 //
@@ -601,6 +625,12 @@ func sendEmail(args map[string]any) {
 	cc, _ := args["cc"].(string)
 	bcc, _ := args["bcc"].(string)
 
+	attachments, err := normalizeAttachments(args["attachments"])
+	if err != nil {
+		writeError("connector_runtime_error", "send_email: "+err.Error())
+		return
+	}
+
 	var inReplyTo, references, threadID string
 	if inReplyToID != "" {
 		rc, errMsg := fetchReplyContext("send_email", inReplyToID)
@@ -612,7 +642,11 @@ func sendEmail(args map[string]any) {
 		subject = ensureRePrefix(subject)
 	}
 
-	rfc2822 := buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references)
+	rfc2822, err := buildRFC2822WithAttachments(to, cc, bcc, subject, body, inReplyTo, references, "", attachments)
+	if err != nil {
+		writeError("connector_runtime_error", "send_email: build message: "+err.Error())
+		return
+	}
 	encoded := base64.URLEncoding.WithPadding(base64.NoPadding).EncodeToString([]byte(rfc2822))
 
 	sendReq := map[string]any{"raw": encoded}

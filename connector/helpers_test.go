@@ -1006,3 +1006,257 @@ func TestExtractEmailBody_SkipsUndecodableThenFindsNext(t *testing.T) {
 		t.Errorf("got (%q, %q), want html after skipping bad plain", body, mt)
 	}
 }
+
+// --- normalizeAttachments ---
+
+func TestNormalizeAttachments_NilAndEmptyReturnNil(t *testing.T) {
+	for _, in := range []any{nil, []any{}} {
+		got, err := normalizeAttachments(in)
+		if err != nil {
+			t.Fatalf("input %#v: unexpected error %v", in, err)
+		}
+		if got != nil {
+			t.Errorf("input %#v: got %#v, want nil", in, got)
+		}
+	}
+}
+
+func TestNormalizeAttachments_ParsesObjectsAndDefaultsMIME(t *testing.T) {
+	in := []any{
+		map[string]any{"filename": "report.html", "content": "<html></html>", "mimeType": "text/html"},
+		map[string]any{"filename": " notes.txt ", "content": "hi"}, // mimeType defaults, filename trimmed
+	}
+	got, err := normalizeAttachments(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d attachments, want 2", len(got))
+	}
+	if got[0].filename != "report.html" || got[0].mimeType != "text/html" || got[0].content != "<html></html>" {
+		t.Errorf("attachment 0 = %+v", got[0])
+	}
+	if got[1].filename != "notes.txt" || got[1].mimeType != "text/plain" || got[1].content != "hi" {
+		t.Errorf("attachment 1 = %+v (filename should be trimmed, mimeType default text/plain)", got[1])
+	}
+}
+
+func TestNormalizeAttachments_RejectsNonArray(t *testing.T) {
+	if _, err := normalizeAttachments("not-an-array"); err == nil {
+		t.Error("expected error for non-array attachments")
+	}
+}
+
+func TestNormalizeAttachments_RejectsNonObjectElement(t *testing.T) {
+	if _, err := normalizeAttachments([]any{"just-a-string"}); err == nil {
+		t.Error("expected error for non-object element")
+	}
+}
+
+func TestNormalizeAttachments_RequiresFilename(t *testing.T) {
+	in := []any{map[string]any{"content": "hi"}}
+	if _, err := normalizeAttachments(in); err == nil {
+		t.Error("expected error when filename missing")
+	}
+	in = []any{map[string]any{"filename": "   ", "content": "hi"}}
+	if _, err := normalizeAttachments(in); err == nil {
+		t.Error("expected error when filename is blank")
+	}
+}
+
+func TestNormalizeAttachments_RequiresStringContent(t *testing.T) {
+	in := []any{map[string]any{"filename": "f.txt"}}
+	if _, err := normalizeAttachments(in); err == nil {
+		t.Error("expected error when content missing")
+	}
+	in = []any{map[string]any{"filename": "f.txt", "content": 42}}
+	if _, err := normalizeAttachments(in); err == nil {
+		t.Error("expected error when content is not a string")
+	}
+}
+
+func TestNormalizeAttachments_RejectsNonTextMIME(t *testing.T) {
+	in := []any{map[string]any{"filename": "doc.pdf", "content": "%PDF-1.4", "mimeType": "application/pdf"}}
+	_, err := normalizeAttachments(in)
+	if err == nil {
+		t.Fatal("expected error for non-text mimeType (binary out of scope)")
+	}
+	if !strings.Contains(err.Error(), "application/pdf") {
+		t.Errorf("error should name the rejected mimeType; got %v", err)
+	}
+}
+
+// --- buildRFC2822WithAttachments ---
+
+func TestBuildRFC2822WithAttachments_NoAttachmentsIsByteForByteUnchanged(t *testing.T) {
+	// The plain and reply outputs must be identical to the pre-attachment
+	// helpers when no attachments are present — the no-op guarantee.
+	plainWant := buildRFC2822("alice@example.com", "cc@example.com", "", "Hello", "world\n")
+	plainGot, err := buildRFC2822WithAttachments("alice@example.com", "cc@example.com", "", "Hello", "world\n", "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if plainGot != plainWant {
+		t.Errorf("plain path differs:\n got=%q\nwant=%q", plainGot, plainWant)
+	}
+
+	replyWant := buildRFC2822Reply("a@x.com", "", "", "Re: Hi", "body", "<msg@x>", "<ref@x> <msg@x>")
+	replyGot, err := buildRFC2822WithAttachments("a@x.com", "", "", "Re: Hi", "body", "<msg@x>", "<ref@x> <msg@x>", "", []emailAttachment{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if replyGot != replyWant {
+		t.Errorf("reply path differs:\n got=%q\nwant=%q", replyGot, replyWant)
+	}
+}
+
+func TestBuildRFC2822WithAttachments_EmitsMultipartMixedWithBoundary(t *testing.T) {
+	atts := []emailAttachment{{filename: "report.html", mimeType: "text/html", content: "<h1>Hi</h1>"}}
+	msg, err := buildRFC2822WithAttachments("alice@example.com", "", "", "Report", "See attached", "", "", "", atts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(msg, "MIME-Version: 1.0\r\n") {
+		t.Error("multipart message must carry MIME-Version header")
+	}
+	if !strings.Contains(msg, "Content-Type: multipart/mixed; boundary=\"") {
+		t.Errorf("message must declare multipart/mixed with boundary; got:\n%s", msg)
+	}
+	if !strings.Contains(msg, "To: alice@example.com\r\n") || !strings.Contains(msg, "Subject: Report\r\n") {
+		t.Error("message must preserve To/Subject headers")
+	}
+}
+
+func TestBuildRFC2822WithAttachments_AttachmentPartIsBase64WithDisposition(t *testing.T) {
+	content := "<html><body>Flight report</body></html>"
+	atts := []emailAttachment{{filename: "flight.html", mimeType: "text/html", content: content}}
+	msg, err := buildRFC2822WithAttachments("a@x.com", "", "", "S", "body text", "", "", "", atts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Parse the multipart body with the stdlib reader as independent
+	// verification that our wire format is correct.
+	idx := strings.Index(msg, "\r\n\r\n")
+	if idx < 0 {
+		t.Fatal("no header/body separator")
+	}
+	headerBlock := msg[:idx]
+	bodyBlock := msg[idx+4:]
+
+	ctLine := ""
+	for _, line := range strings.Split(headerBlock, "\r\n") {
+		if strings.HasPrefix(line, "Content-Type:") {
+			ctLine = strings.TrimSpace(strings.TrimPrefix(line, "Content-Type:"))
+		}
+	}
+	_, params, err := mime.ParseMediaType(ctLine)
+	if err != nil {
+		t.Fatalf("parse content-type %q: %v", ctLine, err)
+	}
+	mr := multipart.NewReader(strings.NewReader(bodyBlock), params["boundary"])
+
+	// Part 1: body.
+	bodyPart, err := mr.NextPart()
+	if err != nil {
+		t.Fatalf("read body part: %v", err)
+	}
+	bb := new(bytes.Buffer)
+	if _, err := bb.ReadFrom(bodyPart); err != nil {
+		t.Fatalf("buffer body part: %v", err)
+	}
+	if bb.String() != "body text" {
+		t.Errorf("body part = %q, want %q", bb.String(), "body text")
+	}
+
+	// Part 2: attachment.
+	attPart, err := mr.NextPart()
+	if err != nil {
+		t.Fatalf("read attachment part: %v", err)
+	}
+	if got := attPart.Header.Get("Content-Transfer-Encoding"); got != "base64" {
+		t.Errorf("attachment CTE = %q, want base64", got)
+	}
+	if got := attPart.Header.Get("Content-Disposition"); !strings.Contains(got, `filename="flight.html"`) {
+		t.Errorf("attachment disposition = %q, want attachment; filename=flight.html", got)
+	}
+	ab := new(bytes.Buffer)
+	if _, err := ab.ReadFrom(attPart); err != nil {
+		t.Fatalf("buffer attachment part: %v", err)
+	}
+	// The stdlib multipart reader does NOT base64-decode; the raw part
+	// body is the wrapped base64 text. Strip whitespace and decode to
+	// confirm it round-trips to the original content.
+	raw := strings.ReplaceAll(strings.ReplaceAll(ab.String(), "\r\n", ""), "\n", "")
+	decoded, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		t.Fatalf("attachment body is not valid base64: %v", err)
+	}
+	if string(decoded) != content {
+		t.Errorf("decoded attachment = %q, want %q", string(decoded), content)
+	}
+
+	if _, err := mr.NextPart(); err != io.EOF {
+		t.Errorf("expected exactly 2 parts; got extra or error %v", err)
+	}
+}
+
+func TestBuildRFC2822WithAttachments_Base64LinesWrappedAt76(t *testing.T) {
+	// A long attachment forces multiple base64 lines; each must be <=76
+	// chars per RFC 2045 so MTAs don't reject the message.
+	long := strings.Repeat("A", 500)
+	atts := []emailAttachment{{filename: "big.txt", mimeType: "text/plain", content: long}}
+	msg, err := buildRFC2822WithAttachments("a@x.com", "", "", "S", "b", "", "", "", atts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Find the attachment part body region and check no base64 line
+	// exceeds 76 chars. We look at lines that are pure base64 alphabet.
+	for _, line := range strings.Split(msg, "\r\n") {
+		if len(line) > 76 {
+			// Header lines can legitimately exceed 76; only flag lines
+			// that look like base64 payload (no colon, no boundary marker).
+			if !strings.Contains(line, ":") && !strings.HasPrefix(line, "--") {
+				t.Errorf("base64 line exceeds 76 chars (len=%d): %q", len(line), line)
+			}
+		}
+	}
+}
+
+func TestNormalizeAttachments_StripsControlCharsFromFilename(t *testing.T) {
+	// A filename with CR/LF must not survive to inject MIME headers.
+	in := []any{map[string]any{
+		"filename": "evil\r\nBcc: attacker@example.com.txt",
+		"content":  "x",
+	}}
+	got, err := normalizeAttachments(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.ContainsAny(got[0].filename, "\r\n") {
+		t.Errorf("filename retained CR/LF: %q", got[0].filename)
+	}
+	if got[0].filename != "evilBcc: attacker@example.com.txt" {
+		t.Errorf("filename = %q", got[0].filename)
+	}
+}
+
+func TestNormalizeAttachments_RejectsMIMEWithControlOrStructuralChars(t *testing.T) {
+	for _, mt := range []string{"text/plain\r\nBcc: x@y.com", "text/plain; boundary=x", `text/plain"`} {
+		in := []any{map[string]any{"filename": "f.txt", "content": "x", "mimeType": mt}}
+		if _, err := normalizeAttachments(in); err == nil {
+			t.Errorf("mimeType %q should be rejected", mt)
+		}
+	}
+}
+
+func TestBuildRFC2822WithAttachments_EscapesQuoteInFilename(t *testing.T) {
+	atts := []emailAttachment{{filename: `a"b.txt`, mimeType: "text/plain", content: "x"}}
+	msg, err := buildRFC2822WithAttachments("a@x.com", "", "", "S", "b", "", "", "", atts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(msg, `filename="a\"b.txt"`) {
+		t.Errorf("quote in filename not escaped; message:\n%s", msg)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"mime/multipart"
 	"net/textproto"
@@ -77,6 +78,241 @@ func buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references string)
 	b.WriteString("\r\n")
 	b.WriteString(body)
 	return b.String()
+}
+
+// emailAttachment is one normalized attachment destined for a
+// multipart/mixed message: a filename, its MIME type, and the decoded
+// (already UTF-8 text) content bytes. The connector base64-encodes
+// content into the attachment part; the wire bytes are what Gmail
+// stores and the recipient downloads.
+type emailAttachment struct {
+	filename string
+	mimeType string
+	content  string
+}
+
+// normalizeAttachments parses the `attachments` action input — a JSON
+// array whose elements the host delivers as map[string]any after
+// unmarshal, matching the update-doc `requests` array-of-object
+// pattern — into a slice of emailAttachment. Each element must carry a
+// non-empty `filename` and `content`; `mimeType` is optional and
+// defaults to text/plain.
+//
+// v1 restricts attachment content to text-like MIME (isTextLikeMIME):
+// the host-ABI delivers the request body as a JSON string, which
+// coerces arbitrary bytes to valid UTF-8 (replacing invalid sequences
+// with U+FFFD), so binary attachment bytes (PDFs, images) would
+// silently corrupt. A self-contained UTF-8 HTML report round-trips
+// cleanly; non-text bytes are rejected with a clear error. This is the
+// identical trade-off documented on buildMultipartUpload and the Drive
+// upload path (helpers.go), and binary support is a follow-up blocked
+// on a host-ABI binary-body field.
+//
+// Returns (nil, nil) when v is nil or an empty array so the caller
+// takes the unchanged single-part text path. Returns an error on any
+// malformed element (wrong type, missing required field, non-text
+// mimeType) so the connector fails loud rather than dropping an
+// attachment the operator asked to send.
+func normalizeAttachments(v any) ([]emailAttachment, error) {
+	if v == nil {
+		return nil, nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("attachments must be an array of objects")
+	}
+	if len(arr) == 0 {
+		return nil, nil
+	}
+	out := make([]emailAttachment, 0, len(arr))
+	for i, el := range arr {
+		m, ok := el.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("attachments[%d] must be an object with filename, content, and optional mimeType", i)
+		}
+		filename, _ := m["filename"].(string)
+		filename = sanitizeAttachmentFilename(filename)
+		if filename == "" {
+			return nil, fmt.Errorf("attachments[%d]: filename is required", i)
+		}
+		content, ok := m["content"].(string)
+		if !ok {
+			return nil, fmt.Errorf("attachments[%d] (%s): content is required and must be a string", i, filename)
+		}
+		mimeType, _ := m["mimeType"].(string)
+		mimeType = strings.TrimSpace(mimeType)
+		if mimeType == "" {
+			mimeType = "text/plain"
+		}
+		if strings.ContainsAny(mimeType, "\r\n") || strings.ContainsAny(mimeType, ";\"") {
+			// A mimeType is emitted verbatim into the attachment part's
+			// Content-Type header; reject header-structural characters
+			// (CR/LF header injection, and ; / " that would forge extra
+			// parameters) rather than silently mangling them.
+			return nil, fmt.Errorf("attachments[%d] (%s): mimeType contains invalid characters", i, filename)
+		}
+		if !isTextLikeMIME(mimeType) {
+			return nil, fmt.Errorf("attachments[%d] (%s): v1 supports text content only; got mimeType=%s. Binary attachment support is planned (host-ABI binary-body field needed)", i, filename, mimeType)
+		}
+		out = append(out, emailAttachment{
+			filename: filename,
+			mimeType: mimeType,
+			content:  content,
+		})
+	}
+	return out, nil
+}
+
+// sanitizeAttachmentFilename trims surrounding whitespace and strips
+// control characters (including CR and LF) from an attachment filename.
+// The filename is interpolated into MIME header parameters
+// (Content-Type name=, Content-Disposition filename=); an unsanitized
+// CR/LF would let a crafted filename inject arbitrary MIME/RFC 5322
+// headers into the assembled message (header-injection). Removing
+// control bytes closes that; quoting/escaping of the remaining
+// quoted-string-unsafe bytes (\ and ") happens at emission via
+// quoteMIMEParam.
+func sanitizeAttachmentFilename(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		// Drop C0/C1 control characters (covers CR, LF, TAB, NUL, DEL).
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// quoteMIMEParam escapes a string for use as a quoted-string MIME
+// header parameter value (RFC 2045 / RFC 822 quoted-string): backslash
+// and double-quote are backslash-escaped. Control characters are
+// assumed already stripped by sanitizeAttachmentFilename.
+func quoteMIMEParam(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
+	return r.Replace(s)
+}
+
+// buildRFC2822WithAttachments builds the RFC 2822 message for the email
+// actions, choosing single-part or multipart/mixed by whether any
+// attachments are present.
+//
+// When attachments is empty it delegates to buildRFC2822Reply, so the
+// output is byte-for-byte identical to the pre-attachment path — the
+// threading no-op guarantee (and the plain-send guarantee) is
+// preserved unchanged.
+//
+// When attachments are present it emits a multipart/mixed message: the
+// same To/Cc/Bcc/Subject/threading headers, then a MIME-Version and a
+// multipart/mixed Content-Type carrying a generated boundary (via
+// mime/multipart.Writer), then one text body part (text/plain by
+// default) plus one attachment part per file. Each attachment part
+// carries Content-Type (with a name), Content-Transfer-Encoding:
+// base64, and Content-Disposition: attachment; filename="...", with the
+// content base64-encoded (76-char wrapped per RFC 2045) as the part
+// body.
+//
+// bodyMIME selects the body part's MIME type; "" defaults to
+// text/plain. Only text/plain and text/html are meaningful today; the
+// caller passes text/plain for the current actions.
+func buildRFC2822WithAttachments(to, cc, bcc, subject, body, inReplyTo, references, bodyMIME string, attachments []emailAttachment) (string, error) {
+	if len(attachments) == 0 {
+		return buildRFC2822Reply(to, cc, bcc, subject, body, inReplyTo, references), nil
+	}
+	if bodyMIME == "" {
+		bodyMIME = "text/plain"
+	}
+
+	var headers strings.Builder
+	headers.WriteString("To: ")
+	headers.WriteString(to)
+	headers.WriteString("\r\n")
+	if cc != "" {
+		headers.WriteString("Cc: ")
+		headers.WriteString(cc)
+		headers.WriteString("\r\n")
+	}
+	if bcc != "" {
+		headers.WriteString("Bcc: ")
+		headers.WriteString(bcc)
+		headers.WriteString("\r\n")
+	}
+	headers.WriteString("Subject: ")
+	headers.WriteString(mime.QEncoding.Encode("utf-8", subject))
+	headers.WriteString("\r\n")
+	if inReplyTo != "" {
+		headers.WriteString("In-Reply-To: ")
+		headers.WriteString(inReplyTo)
+		headers.WriteString("\r\n")
+	}
+	if references != "" {
+		headers.WriteString("References: ")
+		headers.WriteString(references)
+		headers.WriteString("\r\n")
+	}
+	headers.WriteString("MIME-Version: 1.0\r\n")
+
+	var body2 bytes.Buffer
+	w := multipart.NewWriter(&body2)
+
+	bodyHdr := textproto.MIMEHeader{}
+	bodyHdr.Set("Content-Type", bodyMIME+"; charset=\"UTF-8\"")
+	bodyPart, err := w.CreatePart(bodyHdr)
+	if err != nil {
+		return "", fmt.Errorf("create body part: %w", err)
+	}
+	if _, err := bodyPart.Write([]byte(body)); err != nil {
+		return "", fmt.Errorf("write body part: %w", err)
+	}
+
+	for _, att := range attachments {
+		quotedName := quoteMIMEParam(att.filename)
+		attHdr := textproto.MIMEHeader{}
+		attHdr.Set("Content-Type", att.mimeType+"; name=\""+quotedName+"\"")
+		attHdr.Set("Content-Transfer-Encoding", "base64")
+		attHdr.Set("Content-Disposition", "attachment; filename=\""+quotedName+"\"")
+		attPart, err := w.CreatePart(attHdr)
+		if err != nil {
+			return "", fmt.Errorf("create attachment part %q: %w", att.filename, err)
+		}
+		if err := writeBase64Wrapped(attPart, []byte(att.content)); err != nil {
+			return "", fmt.Errorf("write attachment part %q: %w", att.filename, err)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	headers.WriteString("Content-Type: multipart/mixed; boundary=\"")
+	headers.WriteString(w.Boundary())
+	headers.WriteString("\"\r\n\r\n")
+	headers.Write(body2.Bytes())
+	return headers.String(), nil
+}
+
+// writeBase64Wrapped base64-encodes src (standard alphabet, padded per
+// RFC 2045) and writes it in CRLF-terminated 76-character lines, the
+// line length RFC 2045 mandates for base64 in MIME bodies. Mail
+// transfer agents may reject or mangle unwrapped long lines, so the
+// wrapping is not cosmetic.
+func writeBase64Wrapped(w io.Writer, src []byte) error {
+	const lineLen = 76
+	encoded := base64.StdEncoding.EncodeToString(src)
+	for len(encoded) > 0 {
+		n := lineLen
+		if n > len(encoded) {
+			n = len(encoded)
+		}
+		if _, err := io.WriteString(w, encoded[:n]); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, "\r\n"); err != nil {
+			return err
+		}
+		encoded = encoded[n:]
+	}
+	return nil
 }
 
 // replyThreadingHeaders derives the threading data needed to nest a
