@@ -29,7 +29,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@114e7470b97ea98816e8910231e59e0b5d54030b
 
